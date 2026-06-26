@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    name: Lint + Typecheck + Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Configurar Python 3.12
+        run: uv python install 3.12
+
+      - name: Sincronizar dependencias
+        run: uv sync --frozen --extra dev
+
+      - name: Ruff (lint + format check)
+        run: uv run ruff check src tests
+
+      - name: Ruff format
+        run: uv run ruff format --check src tests
+
+      - name: Mypy (typecheck)
+        run: uv run mypy src/app
+
+      - name: Pytest
+        run: uv run pytest -v --tb=short
