@@ -63,7 +63,7 @@ qypu/
 │   └── seed.sql              # datos semilla
 ├── tests/                    # pytest
 ├── pyproject.toml            # deps + config de ruff/mypy/pytest
-├── Dockerfile                # build de imagen
+├── nixpacks.toml             # config de build para Railway (Nixpacks)
 ├── .env.example              # plantilla de variables
 └── .github/workflows/        # CI/CD con GitHub Actions
 ```
@@ -119,7 +119,7 @@ supabase stop              # detener backend local
 ## CI/CD (GitHub Actions)
 
 - **CI** (`.github/workflows/ci.yml`): en push/PR a `main` ejecuta Ruff, Mypy y Pytest con `uv`.
-- **CD** (`.github/workflows/cd.yml`): en merge a `main` aplica migraciones a Supabase remoto con `supabase db push`.
+- **CD** (`.github/workflows/cd.yml`): en merge a `main` aplica migraciones a Supabase (`supabase db push`) y luego despliega la app a Railway (`railway up`).
 
 ### Secretes necesarios en GitHub
 
@@ -127,6 +127,17 @@ supabase stop              # detener backend local
 | ------------------------ | ------------------------------------------------ |
 | `SUPABASE_ACCESS_TOKEN`  | Token de acceso personal de Supabase             |
 | `SUPABASE_DB_URL`        | URL de conexión a la base de datos remota        |
+| `RAILWAY_TOKEN`          | Token de la CLI de Railway (`railway login`)     |
+| `RAILWAY_SERVICE_ID`     | ID del servicio de Railway donde desplegar        |
+
+### Configurar Railway
+
+1. Instalar la CLI: `npm install -g @railway/cli`
+2. Autenticarse: `railway login`
+3. Crear el proyecto/servicio desde el dashboard o con `railway init`.
+4. Obtener `RAILWAY_TOKEN` (Settings > API Tokens) y `RAILWAY_SERVICE_ID` (Settings > service).
+5. Agregarlos como secrets en GitHub.
+6. Configurar las variables de entorno en el servicio de Railway (las mismas de `.env.example`, con `PORT` automático de Railway).
 
 ## Variables de entorno
 
