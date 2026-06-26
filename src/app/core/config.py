@@ -29,9 +29,6 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = Field(alias="SUPABASE_SERVICE_ROLE_KEY")
     supabase_jwt_secret: str = Field(alias="SUPABASE_JWT_SECRET")
 
-    # DB (opcional)
-    database_url: str | None = Field(default=None, alias="DATABASE_URL")
-
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
