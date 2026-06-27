@@ -1,32 +1,31 @@
-"""Excepciones de dominio compartidas."""
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
-from __future__ import annotations
 
-
-class AppError(Exception):
-    """Error base de la aplicacion."""
-
-    def __init__(self, message: str, status_code: int = 500) -> None:
-        super().__init__(message)
+class DomainError(Exception):
+    def __init__(self, code: str, message: str, status_code: int = 400) -> None:
+        self.code = code
         self.message = message
         self.status_code = status_code
+        super().__init__(message)
 
 
-class NotFoundError(AppError):
-    def __init__(self, message: str = "Recurso no encontrado") -> None:
-        super().__init__(message, status_code=404)
+class AuthenticationError(DomainError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="AUTHENTICATION_REQUIRED",
+            message="valid bearer token is required",
+            status_code=401,
+        )
 
 
-class UnauthorizedError(AppError):
-    def __init__(self, message: str = "No autorizado") -> None:
-        super().__init__(message, status_code=401)
-
-
-class ForbiddenError(AppError):
-    def __init__(self, message: str = "Prohibido") -> None:
-        super().__init__(message, status_code=403)
-
-
-class ConflictError(AppError):
-    def __init__(self, message: str = "Conflicto de estado") -> None:
-        super().__init__(message, status_code=409)
+def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(DomainError)
+    async def domain_exception_handler(
+        _request: Request,
+        exc: DomainError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"code": exc.code, "message": exc.message},
+        )

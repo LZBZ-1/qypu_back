@@ -13,7 +13,12 @@ dependencies = [
     "pydantic-settings>=2.6.0",
     "python-dotenv>=1.0.1",
     "httpx>=0.27.0",
+    "psycopg[binary]>=3.3.4",
+    "aiogram>=3.29.0",
 ]
+
+[project.scripts]
+qypu-dev = "app.dev:main"
 
 [dependency-groups]
 dev = [
