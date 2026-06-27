@@ -25,16 +25,16 @@ uv sync
 
 # 2. Copiar variables de entorno
 cp .env.example .env
-# Editar .env con las credenciales reales de Supabase
+# Editar .env con las credenciales reales de Supabase y el puerto local
 
 # 3. Iniciar backend de Supabase local (opcional)
 supabase start
 
 # 4. Levantar la API
-uv run uvicorn app.main:app --reload
+uv run qypu-dev
 ```
 
-La API queda disponible en <http://localhost:8000>, docs en <http://localhost:8000/docs>.
+Con el `.env.example`, la API queda disponible en <http://localhost:8765>, docs en <http://localhost:8765/docs>.
 
 ## Estructura del proyecto
 
@@ -103,7 +103,7 @@ uv run ruff check src     # lint
 uv run ruff format src    # formatear
 uv run mypy src/app        # typecheck
 uv run pytest             # tests
-uv run uvicorn app.main:app --reload  # servidor dev
+uv run qypu-dev             # servidor dev, lee PORT desde .env
 ```
 
 ### Supabase local
@@ -149,4 +149,17 @@ Ver `.env.example`. Principales:
 | `SUPABASE_ANON_KEY`         | Clave anon (respeta RLS)                 |
 | `SUPABASE_SERVICE_ROLE_KEY` | Clave service_role (bypassa RLS)         |
 | `SUPABASE_JWT_SECRET`       | Secreto JWT para verificar tokens       |
+| `PORT`                     | Puerto local de la API                   |
 | `APP_ENV`                   | `development` / `production`             |
+
+### Telegram con ngrok
+
+1. Levantar la API local, abrir ngrok y registrar el webhook:
+
+```bash
+uv run qypu-dev --ngrok
+```
+
+Al crear un canal `telegram`, la API devuelve `linking_url` con el formato
+`https://t.me/{TELEGRAM_BOT_USERNAME}?start={linking_code}`. Al abrir ese link,
+el bot recibe `/start`, vincula el canal y responde en el chat.
