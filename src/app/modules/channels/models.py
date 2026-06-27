@@ -17,3 +17,4 @@ class Channel:
     telegram_first_name: str | None = None
     telegram_last_name: str | None = None
     connected_at: datetime | None = None
+    organization_name: str | None = None

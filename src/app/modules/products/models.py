@@ -4,13 +4,6 @@ from uuid import UUID
 
 
 @dataclass(frozen=True)
-class Category:
-    id: UUID
-    organization_id: UUID
-    name: str
-
-
-@dataclass(frozen=True)
 class Branch:
     id: UUID
     organization_id: UUID

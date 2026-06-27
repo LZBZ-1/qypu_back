@@ -19,15 +19,6 @@ class ProductNotFoundError(DomainError):
         )
 
 
-class ProductCategoryNotFoundError(DomainError):
-    def __init__(self) -> None:
-        super().__init__(
-            code="PRODUCT_CATEGORY_NOT_FOUND",
-            message="product category was not found",
-            status_code=404,
-        )
-
-
 class ProductBranchNotFoundError(DomainError):
     def __init__(self) -> None:
         super().__init__(

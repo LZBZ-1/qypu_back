@@ -206,23 +206,25 @@ class ChannelsRepository:
         result = await self._connection.execute(
             """
             SELECT
-                id,
-                organization_id,
-                name,
-                channel_type,
-                status,
-                linking_code,
-                telegram_chat_id,
-                telegram_user_id,
-                telegram_username,
-                telegram_first_name,
-                telegram_last_name,
-                connected_at
-            FROM channels
+                c.id,
+                c.organization_id,
+                c.name,
+                c.channel_type,
+                c.status,
+                c.linking_code,
+                c.telegram_chat_id,
+                c.telegram_user_id,
+                c.telegram_username,
+                c.telegram_first_name,
+                c.telegram_last_name,
+                c.connected_at,
+                o.name AS organization_name
+            FROM channels c
+            JOIN organizations o ON o.id = c.organization_id
             WHERE
-                channel_type = 'telegram'
-                AND status = 'connected'
-                AND telegram_chat_id = %(chat_id)s
+                c.channel_type = 'telegram'
+                AND c.status = 'connected'
+                AND c.telegram_chat_id = %(chat_id)s
             LIMIT 1
             """,
             {"chat_id": chat_id},
@@ -245,4 +247,5 @@ class ChannelsRepository:
             telegram_first_name=channel_data["telegram_first_name"],
             telegram_last_name=channel_data["telegram_last_name"],
             connected_at=channel_data["connected_at"],
+            organization_name=str(channel_data["organization_name"]),
         )

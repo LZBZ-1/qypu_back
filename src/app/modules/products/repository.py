@@ -5,85 +5,12 @@ from uuid import UUID
 from psycopg import AsyncConnection, Error
 
 from app.modules.products.exceptions import ProductPersistenceError
-from app.modules.products.models import Branch, Category, Product, ProductStock
+from app.modules.products.models import Branch, Product, ProductStock
 
 
 class ProductsRepository:
     def __init__(self, connection: AsyncConnection[Any]) -> None:
         self._connection = connection
-
-    async def list_categories(self, organization_id: UUID) -> list[Category]:
-        result = await self._connection.execute(
-            """
-            SELECT id, organization_id, name
-            FROM categories
-            WHERE organization_id = %(organization_id)s
-            ORDER BY name
-            """,
-            {"organization_id": str(organization_id)},
-        )
-        rows = cast(list[dict[str, Any]], await result.fetchall())
-        return [
-            Category(
-                id=UUID(str(row["id"])),
-                organization_id=UUID(str(row["organization_id"])),
-                name=str(row["name"]),
-            )
-            for row in rows
-        ]
-
-    async def find_category_by_name(
-        self,
-        organization_id: UUID,
-        name: str,
-    ) -> Category | None:
-        result = await self._connection.execute(
-            """
-            SELECT id, organization_id, name
-            FROM categories
-            WHERE organization_id = %(organization_id)s
-              AND lower(name) = lower(%(name)s)
-            LIMIT 1
-            """,
-            {"organization_id": str(organization_id), "name": name},
-        )
-        row = await result.fetchone()
-        if row is None:
-            return None
-
-        data = cast(dict[str, Any], row)
-        return Category(
-            id=UUID(str(data["id"])),
-            organization_id=UUID(str(data["organization_id"])),
-            name=str(data["name"]),
-        )
-
-    async def find_category_like_name(
-        self,
-        organization_id: UUID,
-        name: str,
-    ) -> Category | None:
-        result = await self._connection.execute(
-            """
-            SELECT id, organization_id, name
-            FROM categories
-            WHERE organization_id = %(organization_id)s
-              AND lower(name) LIKE lower(%(name)s)
-            ORDER BY length(name), name
-            LIMIT 1
-            """,
-            {"organization_id": str(organization_id), "name": f"%{name}%"},
-        )
-        row = await result.fetchone()
-        if row is None:
-            return None
-
-        data = cast(dict[str, Any], row)
-        return Category(
-            id=UUID(str(data["id"])),
-            organization_id=UUID(str(data["organization_id"])),
-            name=str(data["name"]),
-        )
 
     async def list_products(self, organization_id: UUID, limit: int = 10) -> list[Product]:
         result = await self._connection.execute(
@@ -95,6 +22,30 @@ class ProductsRepository:
             LIMIT %(limit)s
             """,
             {"organization_id": str(organization_id), "limit": limit},
+        )
+        rows = cast(list[dict[str, Any]], await result.fetchall())
+        return [self._build_product(row) for row in rows]
+
+    async def list_products_by_category(
+        self,
+        organization_id: UUID,
+        category_id: UUID,
+        limit: int = 10,
+    ) -> list[Product]:
+        result = await self._connection.execute(
+            """
+            SELECT id, organization_id, category_id, name, unit_price
+            FROM products
+            WHERE organization_id = %(organization_id)s
+              AND category_id = %(category_id)s
+            ORDER BY name
+            LIMIT %(limit)s
+            """,
+            {
+                "organization_id": str(organization_id),
+                "category_id": str(category_id),
+                "limit": limit,
+            },
         )
         rows = cast(list[dict[str, Any]], await result.fetchall())
         return [self._build_product(row) for row in rows]

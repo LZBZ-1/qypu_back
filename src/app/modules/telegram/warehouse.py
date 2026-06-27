@@ -11,11 +11,39 @@ CANCEL_WORDS = {"no", "cancelar", "cancela"}
 class WarehouseAgent:
     def parse(self, text: str) -> WarehouseIntent | None:
         normalized = normalize_text(text)
-        if normalized in {"almacenero", "almacen", "inventario", "ayuda", "help", "productos"}:
+        if normalized in {
+            "almacenero",
+            "almacen",
+            "inventario",
+            "ayuda",
+            "help",
+            "productos",
+            "categorias",
+        }:
             return WarehouseIntent("help", {}, requires_confirmation=False)
 
         if normalized in {"listar productos", "lista productos", "ver productos"}:
             return WarehouseIntent("list_products", {}, requires_confirmation=False)
+
+        if normalized in {"listar categorias", "lista categorias", "ver categorias"}:
+            return WarehouseIntent("list_categories", {}, requires_confirmation=False)
+
+        category_products = extract_category_name_for_product_list(normalized)
+        if category_products:
+            return WarehouseIntent(
+                "list_products_by_category",
+                {"category_name": category_products},
+                requires_confirmation=False,
+            )
+
+        if normalized.startswith(("registrar categoria ", "crear categoria ")):
+            match = re.match(r"^(?:registrar|crear)\s+categoria\s+(.+)$", normalized)
+            if match:
+                return WarehouseIntent(
+                    "create_category",
+                    {"category_name": match.group(1).strip()},
+                    requires_confirmation=True,
+                )
 
         stock_query = re.search(
             r"(?:cuanto|cuanta|ver|consultar).*(?:stock|inventario)",
@@ -38,6 +66,9 @@ class WarehouseAgent:
 
         if normalized.startswith("editar producto "):
             return self._parse_rename(normalized)
+
+        if normalized.startswith("editar categoria "):
+            return self._parse_category_rename(normalized)
 
         return None
 
@@ -96,6 +127,20 @@ class WarehouseAgent:
             requires_confirmation=True,
         )
 
+    def _parse_category_rename(self, normalized: str) -> WarehouseIntent | None:
+        match = re.match(r"editar categoria\s+(.+?)\s+nombre\s+(.+)$", normalized)
+        if not match:
+            return None
+
+        return WarehouseIntent(
+            "rename_category",
+            {
+                "category_name": match.group(1).strip(),
+                "new_name": match.group(2).strip(),
+            },
+            requires_confirmation=True,
+        )
+
 
 def normalize_text(text: str) -> str:
     without_accents = "".join(
@@ -140,6 +185,20 @@ def extract_category_name_for_create(text: str) -> str | None:
         " categoria ",
         [" stock ", " precio "],
     )
+
+
+def extract_category_name_for_product_list(text: str) -> str | None:
+    patterns = [
+        r"(?:que\s+)?productos\s+(?:tengo\s+)?(?:en|de)\s+(?:la\s+)?categoria\s+(.+)$",
+        r"(?:que\s+)?(?:tengo|hay)\s+en\s+(?:la\s+)?categoria\s+(.+)$",
+        r"catalogo\s+de\s+(?:la\s+)?categoria\s+(.+)$",
+        r"categoria\s+(.+?)\s+productos$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return None
 
 
 def extract_stock_value(text: str) -> int | None:

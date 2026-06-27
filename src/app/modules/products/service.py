@@ -1,9 +1,10 @@
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+from app.modules.categories.exceptions import CategoryNotFoundError
+from app.modules.categories.service import CategoriesUseCase
 from app.modules.products.exceptions import (
     ProductBranchNotFoundError,
-    ProductCategoryNotFoundError,
     ProductNotFoundError,
     ProductStockWouldBeNegativeError,
 )
@@ -12,8 +13,13 @@ from app.modules.products.repository import ProductsRepository
 
 
 class ProductsUseCase:
-    def __init__(self, repository: ProductsRepository) -> None:
+    def __init__(
+        self,
+        repository: ProductsRepository,
+        categories_use_case: CategoriesUseCase,
+    ) -> None:
         self._repository = repository
+        self._categories_use_case = categories_use_case
 
     async def create_product(
         self,
@@ -23,14 +29,12 @@ class ProductsUseCase:
         unit_price: Decimal | None,
         initial_stock: int | None,
     ) -> tuple[Product, ProductStock | None]:
-        category = await self._repository.find_category_by_name(organization_id, category_name)
+        category = await self._categories_use_case.find_category_by_name(
+            organization_id,
+            category_name,
+        )
         if category is None:
-            category = await self._repository.find_category_like_name(
-                organization_id,
-                category_name,
-            )
-        if category is None:
-            raise ProductCategoryNotFoundError()
+            raise CategoryNotFoundError()
 
         product = await self._repository.create_product(
             product_id=uuid4(),
@@ -53,6 +57,17 @@ class ProductsUseCase:
 
     async def list_products(self, organization_id: UUID) -> list[Product]:
         return await self._repository.list_products(organization_id)
+
+    async def list_products_by_category(
+        self,
+        organization_id: UUID,
+        category_name: str,
+    ) -> list[Product]:
+        category = await self._categories_use_case.find_category(organization_id, category_name)
+        return await self._repository.list_products_by_category(
+            organization_id=organization_id,
+            category_id=category.id,
+        )
 
     async def get_product_stock(
         self,
