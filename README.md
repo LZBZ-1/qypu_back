@@ -163,3 +163,25 @@ uv run qypu-dev --ngrok
 Al crear un canal `telegram`, la API devuelve `linking_url` con el formato
 `https://t.me/{TELEGRAM_BOT_USERNAME}?start={linking_code}`. Al abrir ese link,
 el bot recibe `/start`, vincula el canal y responde en el chat.
+
+### Capa multimodal con Groq
+
+El bot de Telegram ahora acepta una capa opcional por encima del flujo actual de
+orquestacion:
+
+- `texto` -> Groq `openai/gpt-oss-120b` -> orquestador estructurado -> agente `almacen` o `vendedor`
+- `voz/audio` -> Groq `whisper-large-v3-turbo` -> texto -> orquestador LLM -> agente `almacen` o `vendedor`
+- `imagen` -> Groq `meta-llama/llama-4-scout-17b-16e-instruct` -> descripcion en espanol
+
+La descripcion de imagen es independiente y no participa en el proceso principal.
+La transcripcion de voz si alimenta directamente el flujo existente del bot.
+
+Variables necesarias:
+
+```bash
+GROQ_API_KEY=tu-api-key-de-groq
+GROQ_API_BASE_URL=https://api.groq.com/openai/v1
+GROQ_TEXT_MODEL=openai/gpt-oss-120b
+GROQ_AUDIO_MODEL=whisper-large-v3-turbo
+GROQ_VISION_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
+```

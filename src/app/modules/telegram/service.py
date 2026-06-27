@@ -18,7 +18,7 @@ from app.modules.products.exceptions import (
 from app.modules.products.repository import ProductsRepository
 from app.modules.products.service import ProductsUseCase
 from app.modules.telegram.models import PendingTelegramAction, SellerIntent, WarehouseIntent
-from app.modules.telegram.orchestrator import TelegramOrchestrator
+from app.modules.telegram.orchestrator import TelegramOrchestrator, TelegramOrchestratorError
 from app.modules.telegram.repository import TelegramPendingActionsRepository
 from app.modules.telegram.warehouse import CANCEL_WORDS, CONFIRM_WORDS, normalize_text
 
@@ -72,12 +72,19 @@ async def handle_telegram_text_message(chat_id: int, text: str) -> str:
                 products_use_case=products_use_case,
             )
 
-        intent = TelegramOrchestrator().route(text)
+        try:
+            intent = await TelegramOrchestrator().route(text)
+        except TelegramOrchestratorError as exc:
+            return str(exc)
         if intent is None:
             return _agent_selection_message()
 
         if intent.intent.action_type == "help":
             return _agent_help_message(intent.agent_type)
+
+        missing_payload_message = _missing_payload_message(intent.intent)
+        if missing_payload_message is not None:
+            return missing_payload_message
 
         if intent.agent_type == "seller":
             seller_intent = intent.intent
@@ -175,6 +182,41 @@ def _execute_seller_intent(intent: SellerIntent) -> str:
         )
 
     return _seller_help_message()
+
+
+def _missing_payload_message(intent: SellerIntent | WarehouseIntent) -> str | None:
+    if intent.action_type == "create_product":
+        if "product_name" not in intent.payload:
+            return "Para registrar un producto necesito el nombre del producto."
+        if "category_name" not in intent.payload:
+            return "Para registrar un producto necesito la categoria."
+        return None
+
+    if intent.action_type == "get_stock" and "product_name" not in intent.payload:
+        return "Para consultar stock necesito el nombre del producto."
+
+    if intent.action_type == "set_stock":
+        if "product_name" not in intent.payload:
+            return "Para fijar el stock necesito el nombre del producto."
+        if "quantity" not in intent.payload:
+            return "Para fijar el stock necesito la cantidad final."
+        return None
+
+    if intent.action_type == "increment_stock":
+        if "product_name" not in intent.payload:
+            return "Para mover el stock necesito el nombre del producto."
+        if "delta" not in intent.payload:
+            return "Para mover el stock necesito indicar cuanto sube o baja."
+        return None
+
+    if intent.action_type == "rename_product":
+        if "product_name" not in intent.payload:
+            return "Para editar un producto necesito el nombre actual."
+        if "new_name" not in intent.payload:
+            return "Para editar un producto necesito el nuevo nombre."
+        return None
+
+    return None
 
 
 async def _execute_write_action(

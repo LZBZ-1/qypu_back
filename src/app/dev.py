@@ -1,4 +1,5 @@
 import argparse
+import os
 import queue
 import re
 import subprocess
@@ -58,12 +59,20 @@ def stop_existing_ngrok_processes() -> None:
     except (httpx.HTTPError, KeyError, TypeError):
         pass
 
-    subprocess.run(
-        ["pkill", "-f", "ngrok http"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "ngrok.exe"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        subprocess.run(
+            ["pkill", "-f", "ngrok http"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     time.sleep(0.5)
 
 

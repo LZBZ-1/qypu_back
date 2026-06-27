@@ -1,10 +1,15 @@
-from aiogram import Dispatcher
+from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandObject, CommandStart
 from aiogram.types import Message
 
 from app.modules.channels.exceptions import (
     ChannelAlreadyLinkedError,
     ChannelInvalidLinkingCodeError,
+)
+from app.modules.telegram.media import (
+    GroqMediaClient,
+    GroqMediaProcessingError,
+    download_telegram_file,
 )
 from app.modules.telegram.service import connect_telegram_channel, handle_telegram_text_message
 
@@ -47,9 +52,87 @@ def register_handlers(dispatcher: Dispatcher) -> None:
 
     @dispatcher.message()
     async def handle_regular_message(message: Message) -> None:
-        if message.chat.id is None or message.text is None:
-            await message.answer("Por ahora solo puedo procesar mensajes de texto.")
+        if message.chat.id is None:
+            await message.answer("No pude identificar este chat.")
+            return
+        bot = _require_bot(message)
+
+        if message.text is not None:
+            response = await handle_telegram_text_message(
+                chat_id=message.chat.id,
+                text=message.text,
+            )
+            await message.answer(response)
             return
 
-        response = await handle_telegram_text_message(chat_id=message.chat.id, text=message.text)
-        await message.answer(response)
+        media_client = GroqMediaClient()
+
+        if message.voice is not None or message.audio is not None:
+            audio = message.voice or message.audio
+            if audio is None:
+                await message.answer("No pude leer el audio enviado.")
+                return
+
+            filename = getattr(audio, "file_name", None) or "telegram-audio.ogg"
+            content_type = audio.mime_type or "audio/ogg"
+            try:
+                audio_bytes = await download_telegram_file(bot, audio.file_id)
+                transcript = await media_client.transcribe_audio(
+                    audio_bytes,
+                    filename,
+                    content_type,
+                )
+            except GroqMediaProcessingError as exc:
+                await message.answer(str(exc))
+                return
+
+            response = await handle_telegram_text_message(
+                chat_id=message.chat.id,
+                text=transcript,
+            )
+            await message.answer(f"Entendi esto del audio:\n{transcript}\n\n{response}")
+            return
+
+        if message.photo or _is_image_document(message):
+            try:
+                image_bytes, content_type = await _download_image_bytes(message, bot)
+                description = await media_client.describe_image(image_bytes, content_type)
+            except GroqMediaProcessingError as exc:
+                await message.answer(str(exc))
+                return
+
+            await message.answer(f"Descripcion de la imagen:\n{description}")
+            return
+
+        await message.answer("Por ahora puedo procesar texto, notas de voz, audio e imagenes.")
+
+
+async def _download_image_bytes(message: Message, bot: Bot) -> tuple[bytes, str]:
+    if message.photo:
+        photo = message.photo[-1]
+        image_bytes = await download_telegram_file(bot, photo.file_id)
+        return image_bytes, "image/jpeg"
+
+    if (
+        message.document
+        and message.document.mime_type
+        and message.document.mime_type.startswith("image/")
+    ):
+        image_bytes = await download_telegram_file(bot, message.document.file_id)
+        return image_bytes, message.document.mime_type
+
+    raise GroqMediaProcessingError("No encontre una imagen compatible en el mensaje.")
+
+
+def _is_image_document(message: Message) -> bool:
+    return bool(
+        message.document
+        and message.document.mime_type
+        and message.document.mime_type.startswith("image/")
+    )
+
+
+def _require_bot(message: Message) -> Bot:
+    if message.bot is None:
+        raise GroqMediaProcessingError("No pude acceder al bot de Telegram.")
+    return message.bot
