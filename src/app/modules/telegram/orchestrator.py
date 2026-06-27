@@ -23,11 +23,15 @@ ORCHESTRATOR_SCHEMA = {
                 "enum": [
                     "help",
                     "list_products",
+                    "list_products_by_category",
+                    "list_categories",
                     "get_stock",
                     "create_product",
+                    "create_category",
                     "set_stock",
                     "increment_stock",
                     "rename_product",
+                    "rename_category",
                     "create_sale",
                     "none",
                 ],
@@ -70,7 +74,7 @@ ORCHESTRATOR_SCHEMA = {
 ORCHESTRATOR_SYSTEM_PROMPT = """
 Eres la IA orquestadora de Qypu para Telegram.
 Tu trabajo es delegar solicitudes al agente correcto:
-- warehouse: productos, stock, inventario, catalogo, almacen
+- warehouse: productos, categorias, stock, inventario, catalogo, almacen
 - seller: ventas, pedidos, clientes, comprobantes, boletas, facturas, cotizaciones
 
 Responde solo con JSON valido segun el schema entregado.
@@ -80,13 +84,26 @@ Reglas:
 - Si el usuario pide ayuda general de almacen, usa agent_type="warehouse" y action_type="help".
 - Si el usuario pide ayuda general de ventas, usa agent_type="seller" y action_type="help".
 - Para warehouse usa solo estas acciones:
-  help, list_products, get_stock, create_product, set_stock, increment_stock, rename_product.
+  help, list_products, list_products_by_category, list_categories, get_stock,
+  create_product, create_category, set_stock, increment_stock, rename_product,
+  rename_category.
 - Para seller usa solo estas acciones: help, create_sale.
 - create_sale solo identifica que la solicitud pertenece al vendedor. No inventes datos.
 - requires_confirmation debe ser true solo en acciones de escritura de warehouse:
-  create_product, set_stock, increment_stock, rename_product.
-- requires_confirmation debe ser false en help, list_products, get_stock y create_sale.
+  create_product, create_category, set_stock, increment_stock, rename_product, rename_category.
+- requires_confirmation debe ser false en help, list_products, list_products_by_category,
+  list_categories, get_stock y create_sale.
 - Extrae product_name, category_name, new_name y text en espanol natural.
+- Para create_category, conserva en text el mensaje original completo. Si el usuario
+  menciona varias categorias separadas por comas, deja category_name con el texto de
+  categorias completo, sin juntar ni descartar elementos. Si usa comillas, respeta el
+  contenido entre comillas.
+- No decidas si "Alimentos y Bebidas" es una o dos categorias cuando no hay comas;
+  devuelve create_category con ese texto y el flujo conversacional pedira confirmacion.
+- Si el usuario pide registrar una categoria y crear un producto en la misma solicitud,
+  usa action_type="create_product" con category_name. No uses create_category en ese caso.
+- Usa list_products_by_category cuando el usuario pide productos de una categoria,
+  por ejemplo "que tengo en limpieza", "productos de abarrotes" o "catalogo de categoria bebidas".
 - unit_price debe ser string decimal con punto si existe, por ejemplo "12.50".
 - initial_stock, quantity y delta deben ser enteros si existen.
 - Si falta un dato clave para una accion, mantén la mejor accion posible y deja ese campo en null.
@@ -164,11 +181,15 @@ class TelegramOrchestrator:
         if agent_type == "warehouse" and action_type in {
             "help",
             "list_products",
+            "list_products_by_category",
+            "list_categories",
             "get_stock",
             "create_product",
+            "create_category",
             "set_stock",
             "increment_stock",
             "rename_product",
+            "rename_category",
         }:
             return TelegramRoute(
                 agent_type="warehouse",
