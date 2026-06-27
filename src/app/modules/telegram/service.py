@@ -17,7 +17,7 @@ from app.modules.products.exceptions import (
 )
 from app.modules.products.repository import ProductsRepository
 from app.modules.products.service import ProductsUseCase
-from app.modules.telegram.models import PendingTelegramAction, WarehouseIntent
+from app.modules.telegram.models import PendingTelegramAction, SellerIntent, WarehouseIntent
 from app.modules.telegram.orchestrator import TelegramOrchestrator
 from app.modules.telegram.repository import TelegramPendingActionsRepository
 from app.modules.telegram.warehouse import CANCEL_WORDS, CONFIRM_WORDS, normalize_text
@@ -74,22 +74,32 @@ async def handle_telegram_text_message(chat_id: int, text: str) -> str:
 
         intent = TelegramOrchestrator().route(text)
         if intent is None:
-            return _help_message()
+            return _agent_selection_message()
 
-        if intent.action_type == "help":
-            return _help_message()
+        if intent.intent.action_type == "help":
+            return _agent_help_message(intent.agent_type)
 
-        if intent.requires_confirmation:
+        if intent.agent_type == "seller":
+            seller_intent = intent.intent
+            if not isinstance(seller_intent, SellerIntent):
+                return _agent_selection_message()
+            return _execute_seller_intent(seller_intent)
+
+        warehouse_intent = intent.intent
+        if not isinstance(warehouse_intent, WarehouseIntent):
+            return _agent_selection_message()
+
+        if warehouse_intent.requires_confirmation:
             await pending_repository.save(
                 channel_id=channel.id,
-                action_type=intent.action_type,
-                payload=intent.payload,
+                action_type=warehouse_intent.action_type,
+                payload=warehouse_intent.payload,
             )
-            return _confirmation_message(intent)
+            return _confirmation_message(warehouse_intent)
 
         return await _execute_read_intent(
             channel=channel,
-            intent=intent,
+            intent=warehouse_intent,
             products_use_case=products_use_case,
         )
 
@@ -154,6 +164,17 @@ async def _execute_read_intent(
         return f"{product.name} tiene {quantity} unidades en stock."
 
     return _help_message()
+
+
+def _execute_seller_intent(intent: SellerIntent) -> str:
+    if intent.action_type == "create_sale":
+        return (
+            "Llamaste al vendedor de Qypu.\n\n"
+            "Todavia no tengo habilitado el registro de ventas por Telegram. "
+            "Por ahora puedo identificar que esta solicitud corresponde al vendedor."
+        )
+
+    return _seller_help_message()
 
 
 async def _execute_write_action(
@@ -278,4 +299,28 @@ def _help_message() -> str:
         "- stock arroz 20\n"
         "- cuanto stock tiene arroz\n"
         "- listar productos"
+    )
+
+
+def _seller_help_message() -> str:
+    return (
+        "Soy el vendedor de Qypu. Puedo ayudarte con solicitudes de ventas, pedidos, clientes "
+        "y comprobantes.\n\n"
+        "El registro de ventas por Telegram aun no esta habilitado."
+    )
+
+
+def _agent_help_message(agent_type: str) -> str:
+    if agent_type == "seller":
+        return _seller_help_message()
+    return _help_message()
+
+
+def _agent_selection_message() -> str:
+    return (
+        "Escoge que accion quieres realizar:\n"
+        "- Escribe Vendedor para ventas, pedidos, clientes o comprobantes.\n"
+        "- Escribe Almacenero para productos, stock o inventario.\n\n"
+        "Tambien puedes escribir la accion directamente, por ejemplo: "
+        "stock arroz +3 o registrar venta."
     )

@@ -39,7 +39,10 @@ def register_handlers(dispatcher: Dispatcher) -> None:
 
         await message.answer(
             f"Listo. Tu cuenta de Telegram quedo vinculada al canal {channel.name}.\n\n"
-            "Soy el almacenero de Qypu. Puedes registrar productos, mover stock y hacer consultas."
+            "Escoge que quieres hacer:\n"
+            "- Vendedor: registrar o consultar ventas.\n"
+            "- Almacenero: registrar productos, mover stock y consultar inventario.\n\n"
+            "Tambien puedes escribirme directamente lo que necesitas y llamare al agente correcto."
         )
 
     @dispatcher.message()

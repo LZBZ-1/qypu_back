@@ -11,7 +11,7 @@ CANCEL_WORDS = {"no", "cancelar", "cancela"}
 class WarehouseAgent:
     def parse(self, text: str) -> WarehouseIntent | None:
         normalized = normalize_text(text)
-        if normalized in {"ayuda", "help", "productos"}:
+        if normalized in {"almacenero", "almacen", "inventario", "ayuda", "help", "productos"}:
             return WarehouseIntent("help", {}, requires_confirmation=False)
 
         if normalized in {"listar productos", "lista productos", "ver productos"}:
