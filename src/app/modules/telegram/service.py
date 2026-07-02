@@ -739,8 +739,10 @@ async def _execute_write_action(
         sale = await sales_use_case.create_sale(
             organization_id=channel.organization_id,
             items=sale_items,
+            client_name=_sale_client_name_from_payload(payload),
         )
-        return f"Venta registrada por S/ {_format_money(sale.total_amount)}."
+        client_text = f" Cliente: {sale.client_name}." if sale.client_name else ""
+        return f"Venta registrada por S/ {_format_money(sale.total_amount)}.{client_text}"
 
     if action_type == "create_product":
         product, stock = await products_use_case.create_product(
@@ -834,6 +836,9 @@ def _pending_summary(action_type: str, payload: dict[str, Any]) -> str:
     if action_type == "create_sale":
         items = _sale_items_from_payload(payload)
         lines = ["Voy a registrar esta venta:"]
+        client_name = _sale_client_name_from_payload(payload)
+        if client_name is not None:
+            lines.append(f"Cliente: {client_name}")
         for item in items:
             subtotal = item.unit_price * item.quantity
             lines.append(
@@ -918,10 +923,11 @@ def _domain_error_message(exc: DomainError) -> str:
 
 
 def _sale_payload_from_text(text: str) -> dict[str, Any] | None:
-    sale_items = _parse_sale_items(text)
+    sale_text, client_name = _extract_sale_client(text)
+    sale_items = _parse_sale_items(sale_text)
     if not sale_items:
         return None
-    return {
+    payload: dict[str, Any] = {
         "items": [
             {
                 "product_name": item.product_name,
@@ -931,6 +937,29 @@ def _sale_payload_from_text(text: str) -> dict[str, Any] | None:
             for item in sale_items
         ]
     }
+    if client_name is not None:
+        payload["client_name"] = client_name
+    return payload
+
+
+def _extract_sale_client(text: str) -> tuple[str, str | None]:
+    sale_text = _strip_sale_intro(text)
+    patterns = [
+        r"^(?:a|para)\s+cliente\s+(?P<client>.+?)\s*:\s*(?P<items>.+)$",
+        r"^cliente\s+(?P<client>.+?)\s*:\s*(?P<items>.+)$",
+        r"^(?:a|para)\s+cliente\s+(?P<client>.+?)\s+(?P<items>\d+\s+.+)$",
+        r"^cliente\s+(?P<client>.+?)\s+(?P<items>\d+\s+.+)$",
+        r"^(?P<items>.+?)\s+(?:para\s+cliente|cliente)\s+(?P<client>.+)$",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, sale_text, flags=re.IGNORECASE | re.DOTALL)
+        if match is None:
+            continue
+        client_name = _strip_matching_quotes(match.group("client").strip(" .,:;"))
+        item_text = match.group("items").strip(" .,:;")
+        if client_name and item_text:
+            return item_text, client_name
+    return text, None
 
 
 def _parse_sale_items(text: str) -> list[SaleItemInput]:
@@ -1014,6 +1043,13 @@ def _sale_items_from_payload(payload: dict[str, Any]) -> list[SaleItemInput]:
     return sale_items
 
 
+def _sale_client_name_from_payload(payload: dict[str, Any]) -> str | None:
+    client_name = payload.get("client_name")
+    if isinstance(client_name, str) and client_name.strip():
+        return client_name.strip()
+    return None
+
+
 def _sale_total(items: list[SaleItemInput]) -> Decimal:
     total = Decimal("0")
     for item in items:
@@ -1028,7 +1064,7 @@ def _format_money(value: Decimal) -> str:
 def _create_sale_format_prompt() -> str:
     return (
         "Para registrar una venta necesito producto, cantidad y monto.\n"
-        "Ejemplo: registrar venta 2 arroz a 3.50 y 1 leche a 4.00"
+        "Ejemplo: registrar venta cliente Juan Perez: 2 arroz a 3.50 y 1 leche a 4.00"
     )
 
 

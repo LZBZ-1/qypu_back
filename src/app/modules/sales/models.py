@@ -5,6 +5,13 @@ from uuid import UUID
 
 
 @dataclass(frozen=True)
+class Client:
+    id: UUID
+    organization_id: UUID
+    name: str
+
+
+@dataclass(frozen=True)
 class SaleItemInput:
     product_name: str
     quantity: int
@@ -33,4 +40,5 @@ class Sale:
     status: str
     total_amount: Decimal
     details: list[SaleDetail]
-
+    client_id: UUID | None = None
+    client_name: str | None = None

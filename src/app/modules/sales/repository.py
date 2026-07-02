@@ -5,9 +5,10 @@ from uuid import UUID
 
 from psycopg import AsyncConnection, Error
 
+from app.modules.products.exceptions import ProductStockWouldBeNegativeError
 from app.modules.products.models import Branch, Product
 from app.modules.sales.exceptions import SalePersistenceError
-from app.modules.sales.models import Sale, SaleDetail
+from app.modules.sales.models import Client, Sale, SaleDetail
 
 
 class SalesRepository:
@@ -69,6 +70,45 @@ class SalesRepository:
         row = await result.fetchone()
         return self._build_product(cast(dict[str, Any], row)) if row else None
 
+    async def find_client_by_name(self, organization_id: UUID, name: str) -> Client | None:
+        result = await self._connection.execute(
+            """
+            SELECT id, organization_id, name
+            FROM clients
+            WHERE organization_id = %(organization_id)s
+              AND lower(name) = lower(%(name)s)
+            LIMIT 1
+            """,
+            {"organization_id": str(organization_id), "name": name},
+        )
+        row = await result.fetchone()
+        return self._build_client(cast(dict[str, Any], row)) if row else None
+
+    async def create_client(
+        self,
+        client_id: UUID,
+        organization_id: UUID,
+        name: str,
+    ) -> Client:
+        try:
+            result = await self._connection.execute(
+                """
+                INSERT INTO clients (id, organization_id, name, email, phone_number)
+                VALUES (%(id)s, %(organization_id)s, %(name)s, NULL, NULL)
+                RETURNING id, organization_id, name
+                """,
+                {
+                    "id": str(client_id),
+                    "organization_id": str(organization_id),
+                    "name": name,
+                },
+            )
+            row = cast(dict[str, Any], await result.fetchone())
+        except Error as exc:
+            raise SalePersistenceError() from exc
+
+        return self._build_client(row)
+
     async def create_sale(
         self,
         sale_id: UUID,
@@ -76,16 +116,26 @@ class SalesRepository:
         issue_date: date,
         total_amount: Decimal,
         details: list[tuple[UUID, UUID, int, Decimal]],
+        client_id: UUID | None = None,
+        client_name: str | None = None,
     ) -> Sale:
         try:
             result = await self._connection.execute(
                 """
-                INSERT INTO sales (id, branch_id, issue_date, status, total_amount)
-                VALUES (%(id)s, %(branch_id)s, %(issue_date)s, 'valid', %(total_amount)s)
-                RETURNING id, branch_id, issue_date, status, total_amount
+                INSERT INTO sales (id, client_id, branch_id, issue_date, status, total_amount)
+                VALUES (
+                    %(id)s,
+                    %(client_id)s,
+                    %(branch_id)s,
+                    %(issue_date)s,
+                    'valid',
+                    %(total_amount)s
+                )
+                RETURNING id, client_id, branch_id, issue_date, status, total_amount
                 """,
                 {
                     "id": str(sale_id),
+                    "client_id": str(client_id) if client_id is not None else None,
                     "branch_id": str(branch_id),
                     "issue_date": issue_date,
                     "total_amount": total_amount,
@@ -136,7 +186,39 @@ class SalesRepository:
             status=str(sale_row["status"]),
             total_amount=Decimal(str(sale_row["total_amount"])),
             details=sale_details,
+            client_id=UUID(str(sale_row["client_id"])) if sale_row["client_id"] else None,
+            client_name=client_name,
         )
+
+    async def decrement_stock(
+        self,
+        product_id: UUID,
+        branch_id: UUID,
+        quantity: int,
+    ) -> None:
+        try:
+            result = await self._connection.execute(
+                """
+                UPDATE product_stocks
+                SET quantity = quantity - %(quantity)s,
+                    updated_at = now()
+                WHERE product_id = %(product_id)s
+                  AND branch_id = %(branch_id)s
+                  AND quantity >= %(quantity)s
+                RETURNING quantity
+                """,
+                {
+                    "product_id": str(product_id),
+                    "branch_id": str(branch_id),
+                    "quantity": quantity,
+                },
+            )
+            row = await result.fetchone()
+        except Error as exc:
+            raise SalePersistenceError() from exc
+
+        if row is None:
+            raise ProductStockWouldBeNegativeError()
 
     def _build_product(self, row: dict[str, Any]) -> Product:
         unit_price = row["unit_price"]
@@ -148,3 +230,9 @@ class SalesRepository:
             unit_price=Decimal(str(unit_price)) if unit_price is not None else None,
         )
 
+    def _build_client(self, row: dict[str, Any]) -> Client:
+        return Client(
+            id=UUID(str(row["id"])),
+            organization_id=UUID(str(row["organization_id"])),
+            name=str(row["name"]),
+        )

@@ -22,6 +22,7 @@ from app.modules.telegram.service import (
     _interpret_category_names,
     _missing_payload_message,
     _parse_sale_items,
+    _sale_payload_from_text,
     _start_create_category_flow,
     _start_create_sale_flow,
 )
@@ -127,6 +128,7 @@ class FakeSalesUseCase:
         self,
         organization_id: object,
         items: list[SaleItemInput],
+        client_name: str | None = None,
     ) -> Sale:
         self.created_items = items
         return Sale(
@@ -139,6 +141,7 @@ class FakeSalesUseCase:
                 start=items[0].unit_price * 0,
             ),
             details=[],
+            client_name=client_name,
         )
 
 
@@ -214,6 +217,20 @@ def test_parse_sale_items_extracts_products_quantities_and_amounts() -> None:
     assert str(items[1].unit_price) == "4"
 
 
+def test_sale_payload_extracts_optional_client_name() -> None:
+    payload = _sale_payload_from_text(
+        "registrar venta cliente Juan Perez: 2 arroz a 3.50 y 1 leche a 4"
+    )
+
+    assert payload == {
+        "client_name": "Juan Perez",
+        "items": [
+            {"product_name": "arroz", "quantity": 2, "unit_price": "3.50"},
+            {"product_name": "leche", "quantity": 1, "unit_price": "4"},
+        ],
+    }
+
+
 @pytest.mark.asyncio
 async def test_start_create_sale_flow_saves_pending_confirmation(channel: Channel) -> None:
     pending_repository = FakePendingRepository()
@@ -222,7 +239,7 @@ async def test_start_create_sale_flow_saves_pending_confirmation(channel: Channe
         channel=channel,
         intent=SellerIntent(
             "create_sale",
-            {"text": "registrar venta 2 arroz a 3.50 y 1 leche a 4"},
+            {"text": "registrar venta cliente Juan Perez: 2 arroz a 3.50 y 1 leche a 4"},
             requires_confirmation=True,
         ),
         pending_repository=pending_repository,
@@ -230,6 +247,7 @@ async def test_start_create_sale_flow_saves_pending_confirmation(channel: Channe
 
     assert response == (
         "Voy a registrar esta venta:\n"
+        "Cliente: Juan Perez\n"
         "- 2 x arroz a S/ 3.50 = S/ 7.00\n"
         "- 1 x leche a S/ 4.00 = S/ 4.00\n"
         "Total: S/ 11.00\n\n"
@@ -240,7 +258,8 @@ async def test_start_create_sale_flow_saves_pending_confirmation(channel: Channe
         "items": [
             {"product_name": "arroz", "quantity": 2, "unit_price": "3.50"},
             {"product_name": "leche", "quantity": 1, "unit_price": "4"},
-        ]
+        ],
+        "client_name": "Juan Perez",
     }
 
 
