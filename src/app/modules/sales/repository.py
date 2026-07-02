@@ -56,16 +56,24 @@ class SalesRepository:
         return self._build_product(cast(dict[str, Any], row))
 
     async def find_product_like_name(self, organization_id: UUID, name: str) -> Product | None:
+        tokens = [token for token in name.split() if token]
+        if not tokens:
+            return None
+        token_conditions = [
+            f"lower(name) LIKE lower(%(token_{index})s)" for index, _token in enumerate(tokens)
+        ]
+        params: dict[str, object] = {"organization_id": str(organization_id)}
+        params.update({f"token_{index}": f"%{token}%" for index, token in enumerate(tokens)})
         result = await self._connection.execute(
-            """
+            f"""
             SELECT id, organization_id, category_id, name, unit_price
             FROM products
             WHERE organization_id = %(organization_id)s
-              AND lower(name) LIKE lower(%(name)s)
+              AND {" AND ".join(token_conditions)}
             ORDER BY length(name), name
             LIMIT 1
             """,
-            {"organization_id": str(organization_id), "name": f"%{name}%"},
+            params,
         )
         row = await result.fetchone()
         return self._build_product(cast(dict[str, Any], row)) if row else None
@@ -220,6 +228,64 @@ class SalesRepository:
         if row is None:
             raise ProductStockWouldBeNegativeError()
 
+    async def list_sales_by_date(
+        self,
+        organization_id: UUID,
+        issue_date: date,
+        limit: int = 10,
+    ) -> list[Sale]:
+        result = await self._connection.execute(
+            """
+            SELECT s.id, s.client_id, c.name AS client_name, s.branch_id, s.issue_date,
+                   s.status, s.total_amount
+            FROM sales s
+            JOIN branches b ON b.id = s.branch_id
+            LEFT JOIN clients c ON c.id = s.client_id
+            WHERE b.organization_id = %(organization_id)s
+              AND s.issue_date = %(issue_date)s
+              AND s.status = 'valid'
+            ORDER BY s.issue_date DESC, s.id DESC
+            LIMIT %(limit)s
+            """,
+            {
+                "organization_id": str(organization_id),
+                "issue_date": issue_date,
+                "limit": limit,
+            },
+        )
+        rows = cast(list[dict[str, Any]], await result.fetchall())
+        return await self._build_sales(rows)
+
+    async def list_sales_by_product(
+        self,
+        organization_id: UUID,
+        product_name: str,
+        limit: int = 10,
+    ) -> list[Sale]:
+        result = await self._connection.execute(
+            """
+            SELECT DISTINCT s.id, s.client_id, c.name AS client_name, s.branch_id,
+                   s.issue_date, s.status, s.total_amount
+            FROM sales s
+            JOIN branches b ON b.id = s.branch_id
+            JOIN sale_details sd ON sd.sale_id = s.id
+            JOIN products p ON p.id = sd.product_id
+            LEFT JOIN clients c ON c.id = s.client_id
+            WHERE b.organization_id = %(organization_id)s
+              AND lower(p.name) LIKE lower(%(product_name)s)
+              AND s.status = 'valid'
+            ORDER BY s.issue_date DESC, s.id DESC
+            LIMIT %(limit)s
+            """,
+            {
+                "organization_id": str(organization_id),
+                "product_name": f"%{product_name}%",
+                "limit": limit,
+            },
+        )
+        rows = cast(list[dict[str, Any]], await result.fetchall())
+        return await self._build_sales(rows)
+
     def _build_product(self, row: dict[str, Any]) -> Product:
         unit_price = row["unit_price"]
         return Product(
@@ -236,3 +302,46 @@ class SalesRepository:
             organization_id=UUID(str(row["organization_id"])),
             name=str(row["name"]),
         )
+
+    async def _build_sales(self, rows: list[dict[str, Any]]) -> list[Sale]:
+        sales: list[Sale] = []
+        for row in rows:
+            sale_id = UUID(str(row["id"]))
+            sales.append(
+                Sale(
+                    id=sale_id,
+                    branch_id=UUID(str(row["branch_id"])),
+                    issue_date=cast(date, row["issue_date"]),
+                    status=str(row["status"]),
+                    total_amount=Decimal(str(row["total_amount"])),
+                    details=await self._list_sale_details(sale_id),
+                    client_id=UUID(str(row["client_id"])) if row["client_id"] else None,
+                    client_name=str(row["client_name"]) if row["client_name"] else None,
+                )
+            )
+        return sales
+
+    async def _list_sale_details(self, sale_id: UUID) -> list[SaleDetail]:
+        result = await self._connection.execute(
+            """
+            SELECT sd.id, sd.sale_id, sd.product_id, p.name AS product_name,
+                   sd.quantity, sd.unit_price
+            FROM sale_details sd
+            JOIN products p ON p.id = sd.product_id
+            WHERE sd.sale_id = %(sale_id)s
+            ORDER BY p.name
+            """,
+            {"sale_id": str(sale_id)},
+        )
+        rows = cast(list[dict[str, Any]], await result.fetchall())
+        return [
+            SaleDetail(
+                id=UUID(str(row["id"])),
+                sale_id=UUID(str(row["sale_id"])),
+                product_id=UUID(str(row["product_id"])),
+                product_name=str(row["product_name"]),
+                quantity=int(row["quantity"]),
+                unit_price=Decimal(str(row["unit_price"])),
+            )
+            for row in rows
+        ]

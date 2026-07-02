@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from app.modules.telegram.models import PendingTelegramAction, SellerIntent, War
 from app.modules.telegram.service import (
     _agent_help_message,
     _ask_to_resolve_product_category_if_needed,
+    _execute_seller_read_intent,
     _execute_write_action,
     _handle_create_category_ambiguity_reply,
     _handle_create_category_name_reply,
@@ -23,6 +25,7 @@ from app.modules.telegram.service import (
     _missing_payload_message,
     _parse_sale_items,
     _sale_payload_from_text,
+    _sale_query_from_text,
     _start_create_category_flow,
     _start_create_sale_flow,
 )
@@ -93,6 +96,22 @@ class FakeCategoriesUseCase:
 class FakeProductsUseCase:
     def __init__(self) -> None:
         self.created_product_payload: dict[str, Any] | None = None
+        self.products = [
+            Product(
+                id=uuid4(),
+                organization_id=uuid4(),
+                category_id=uuid4(),
+                name="Casino",
+                unit_price=Decimal("1.00"),
+            ),
+            Product(
+                id=uuid4(),
+                organization_id=uuid4(),
+                category_id=uuid4(),
+                name="Coca cola medio litro",
+                unit_price=Decimal("3.50"),
+            ),
+        ]
 
     async def create_product(
         self,
@@ -119,10 +138,17 @@ class FakeProductsUseCase:
             None,
         )
 
+    async def list_products(self, organization_id: object) -> list[Product]:
+        return self.products
+
 
 class FakeSalesUseCase:
     def __init__(self) -> None:
         self.created_items: list[SaleItemInput] = []
+        self.sales_by_date: list[Sale] = []
+        self.sales_by_product: list[Sale] = []
+        self.requested_date: object | None = None
+        self.requested_product_name: str | None = None
 
     async def create_sale(
         self,
@@ -137,12 +163,44 @@ class FakeSalesUseCase:
             issue_date=datetime.now(UTC).date(),
             status="valid",
             total_amount=sum(
-                (item.unit_price * item.quantity for item in items),
-                start=items[0].unit_price * 0,
+                ((item.unit_price or Decimal("0")) * item.quantity for item in items),
+                start=Decimal("0"),
             ),
             details=[],
             client_name=client_name,
         )
+
+    async def list_sales_by_date(
+        self,
+        organization_id: object,
+        issue_date: object,
+    ) -> list[Sale]:
+        self.requested_date = issue_date
+        return self.sales_by_date
+
+    async def list_sales_by_product(
+        self,
+        organization_id: object,
+        product_name: str,
+    ) -> list[Sale]:
+        self.requested_product_name = product_name
+        return self.sales_by_product
+
+
+class FakeSaleParser:
+    def __init__(self, payload: dict[str, Any] | None) -> None:
+        self.payload = payload
+        self.parsed_text: str | None = None
+        self.product_names: list[str] | None = None
+
+    async def parse(
+        self,
+        text: str,
+        product_names: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        self.parsed_text = text
+        self.product_names = product_names
+        return self.payload
 
 
 @pytest.fixture
@@ -217,6 +275,32 @@ def test_parse_sale_items_extracts_products_quantities_and_amounts() -> None:
     assert str(items[1].unit_price) == "4"
 
 
+def test_parse_sale_items_accepts_natural_sale_without_amount() -> None:
+    items = _parse_sale_items("Hola he vendido una inka cola de 3 litros")
+
+    assert items == [
+        SaleItemInput(product_name="inka cola 3 litros", quantity=1, unit_price=None)
+    ]
+
+
+def test_parse_sale_items_accepts_short_product_name_without_amount() -> None:
+    items = _parse_sale_items("Hola he vendido una inka de 3 litros")
+
+    assert items == [
+        SaleItemInput(product_name="inka 3 litros", quantity=1, unit_price=None)
+    ]
+
+
+def test_sale_payload_allows_catalog_price_when_amount_is_missing() -> None:
+    payload = _sale_payload_from_text("he vendido 1 inka cola de 3 litros")
+
+    assert payload == {
+        "items": [
+            {"product_name": "inka cola 3 litros", "quantity": 1},
+        ],
+    }
+
+
 def test_sale_payload_extracts_optional_client_name() -> None:
     payload = _sale_payload_from_text(
         "registrar venta cliente Juan Perez: 2 arroz a 3.50 y 1 leche a 4"
@@ -229,6 +313,47 @@ def test_sale_payload_extracts_optional_client_name() -> None:
             {"product_name": "leche", "quantity": 1, "unit_price": "4"},
         ],
     }
+
+
+def test_sale_query_extracts_date_filter() -> None:
+    query = _sale_query_from_text("ventas del 02/07/2026")
+
+    assert query == {"type": "date", "date": datetime(2026, 7, 2).date()}
+
+
+def test_sale_query_extracts_product_filter() -> None:
+    query = _sale_query_from_text("ventas de arroz")
+
+    assert query == {"type": "product", "product_name": "arroz"}
+
+
+@pytest.mark.asyncio
+async def test_execute_seller_read_intent_lists_sales_by_product(channel: Channel) -> None:
+    sales_use_case = FakeSalesUseCase()
+    sales_use_case.sales_by_product = [
+        Sale(
+            id=uuid4(),
+            branch_id=uuid4(),
+            issue_date=datetime(2026, 7, 2).date(),
+            status="valid",
+            total_amount=Decimal("7.00"),
+            details=[],
+            client_name="Juan Perez",
+        )
+    ]
+
+    response = await _execute_seller_read_intent(
+        channel=channel,
+        intent=SellerIntent(
+            "list_sales",
+            {"text": "ventas de arroz"},
+            requires_confirmation=False,
+        ),
+        sales_use_case=sales_use_case,
+    )
+
+    assert response == "Ventas con arroz:\n- 2026-07-02 - Juan Perez: S/ 7.00"
+    assert sales_use_case.requested_product_name == "arroz"
 
 
 @pytest.mark.asyncio
@@ -260,6 +385,78 @@ async def test_start_create_sale_flow_saves_pending_confirmation(channel: Channe
             {"product_name": "leche", "quantity": 1, "unit_price": "4"},
         ],
         "client_name": "Juan Perez",
+    }
+
+
+@pytest.mark.asyncio
+async def test_start_create_sale_flow_confirms_catalog_price_sale(channel: Channel) -> None:
+    pending_repository = FakePendingRepository()
+
+    response = await _start_create_sale_flow(
+        channel=channel,
+        intent=SellerIntent(
+            "create_sale",
+            {"text": "he vendido 1 inka cola de 3 litros"},
+            requires_confirmation=True,
+        ),
+        pending_repository=pending_repository,
+    )
+
+    assert response == (
+        "Voy a registrar esta venta:\n"
+        "- 1 x inka cola 3 litros con precio del catalogo\n"
+        "Total: se calculara con el precio del catalogo al guardar.\n\n"
+        "Responde SI para guardar o NO para cancelar."
+    )
+    assert pending_repository.saved_action_type == "create_sale"
+    assert pending_repository.saved_payload == {
+        "items": [
+            {"product_name": "inka cola 3 litros", "quantity": 1},
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_start_create_sale_flow_uses_ai_parser_for_multiple_natural_items(
+    channel: Channel,
+) -> None:
+    pending_repository = FakePendingRepository()
+    sale_parser = FakeSaleParser(
+        {
+            "items": [
+                {"product_name": "Coca cola medio litro", "quantity": 1},
+                {"product_name": "Casino", "quantity": 2},
+            ]
+        }
+    )
+    products_use_case = FakeProductsUseCase()
+
+    response = await _start_create_sale_flow(
+        channel=channel,
+        intent=SellerIntent(
+            "create_sale",
+            {"text": "he vendido una coca y dos galletas casino"},
+            requires_confirmation=True,
+        ),
+        pending_repository=pending_repository,
+        sale_parser=sale_parser,
+        products_use_case=products_use_case,
+    )
+
+    assert response == (
+        "Voy a registrar esta venta:\n"
+        "- 1 x Coca cola medio litro con precio del catalogo\n"
+        "- 2 x Casino con precio del catalogo\n"
+        "Total: se calculara con el precio del catalogo al guardar.\n\n"
+        "Responde SI para guardar o NO para cancelar."
+    )
+    assert sale_parser.parsed_text == "he vendido una coca y dos galletas casino"
+    assert sale_parser.product_names == ["Casino", "Coca cola medio litro"]
+    assert pending_repository.saved_payload == {
+        "items": [
+            {"product_name": "Coca cola medio litro", "quantity": 1},
+            {"product_name": "Casino", "quantity": 2},
+        ]
     }
 
 

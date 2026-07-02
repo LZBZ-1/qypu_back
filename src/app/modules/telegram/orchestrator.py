@@ -33,6 +33,7 @@ ORCHESTRATOR_SCHEMA = {
                     "rename_product",
                     "rename_category",
                     "create_sale",
+                    "list_sales",
                     "none",
                 ],
             },
@@ -87,13 +88,15 @@ Reglas:
   help, list_products, list_products_by_category, list_categories, get_stock,
   create_product, create_category, set_stock, increment_stock, rename_product,
   rename_category.
-- Para seller usa solo estas acciones: help, create_sale.
+- Para seller usa solo estas acciones: help, create_sale, list_sales.
 - create_sale identifica que la solicitud pertenece al vendedor y conserva el mensaje
   original en text. No inventes datos.
+- list_sales se usa para consultar historial de ventas por fecha o producto. Conserva
+  el mensaje original en text y extrae product_name si el usuario filtra por producto.
 - requires_confirmation debe ser true en create_sale y en acciones de escritura de warehouse:
   create_product, create_category, set_stock, increment_stock, rename_product, rename_category.
 - requires_confirmation debe ser false en help, list_products, list_products_by_category,
-  list_categories y get_stock.
+  list_categories, get_stock y list_sales.
 - Extrae product_name, category_name, new_name y text en espanol natural.
 - Para create_category, conserva en text el mensaje original completo. Si el usuario
   menciona varias categorias separadas por comas, deja category_name con el texto de
@@ -169,7 +172,7 @@ class TelegramOrchestrator:
 
         cleaned_payload = self._clean_payload(payload, original_text)
 
-        if agent_type == "seller" and action_type in {"help", "create_sale"}:
+        if agent_type == "seller" and action_type in {"help", "create_sale", "list_sales"}:
             return TelegramRoute(
                 agent_type="seller",
                 intent=SellerIntent(

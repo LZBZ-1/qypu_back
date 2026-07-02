@@ -15,7 +15,7 @@ class Client:
 class SaleItemInput:
     product_name: str
     quantity: int
-    unit_price: Decimal
+    unit_price: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -41,4 +41,13 @@ class Sale:
     total_amount: Decimal
     details: list[SaleDetail]
     client_id: UUID | None = None
+    client_name: str | None = None
+
+
+@dataclass(frozen=True)
+class SaleSummary:
+    id: UUID
+    issue_date: date
+    total_amount: Decimal
+    details: list[SaleDetail]
     client_name: str | None = None

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -42,12 +42,17 @@ class SalesUseCase:
             )
             if product is None:
                 raise ProductNotFoundError()
+            if item.unit_price is None and product.unit_price is None:
+                raise ProductNotFoundError()
 
+            unit_price = item.unit_price if item.unit_price is not None else product.unit_price
+            if unit_price is None:
+                raise ProductNotFoundError()
             requested_quantities[product.id] = (
                 requested_quantities.get(product.id, 0) + item.quantity
             )
-            details.append((uuid4(), product.id, item.quantity, item.unit_price))
-            total_amount += item.unit_price * item.quantity
+            details.append((uuid4(), product.id, item.quantity, unit_price))
+            total_amount += unit_price * item.quantity
 
         for product_id, quantity in requested_quantities.items():
             await self._repository.decrement_stock(
@@ -79,3 +84,17 @@ class SalesUseCase:
             client_id=client.id if client is not None else None,
             client_name=client.name if client is not None else None,
         )
+
+    async def list_sales_by_date(
+        self,
+        organization_id: UUID,
+        issue_date: date,
+    ) -> list[Sale]:
+        return await self._repository.list_sales_by_date(organization_id, issue_date)
+
+    async def list_sales_by_product(
+        self,
+        organization_id: UUID,
+        product_name: str,
+    ) -> list[Sale]:
+        return await self._repository.list_sales_by_product(organization_id, product_name)

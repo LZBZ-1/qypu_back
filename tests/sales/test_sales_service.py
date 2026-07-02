@@ -23,6 +23,7 @@ class FakeSalesRepository:
         self.available_stock = available_stock
         self.decremented: list[tuple[UUID, UUID, int]] = []
         self.created_sale = False
+        self.created_details: list[tuple[UUID, UUID, int, Decimal]] = []
         self.existing_client: Client | None = None
         self.created_client: Client | None = None
         self.sale_client_id: UUID | None = None
@@ -74,6 +75,7 @@ class FakeSalesRepository:
     ) -> Sale:
         self.created_sale = True
         self.sale_client_id = client_id
+        self.created_details = details
         return Sale(
             id=sale_id,
             branch_id=branch_id,
@@ -103,6 +105,22 @@ async def test_create_sale_decrements_sold_product_stock() -> None:
     assert repository.decremented == [(repository.product.id, repository.branch.id, 2)]
     assert repository.created_sale is True
     assert sale.client_id is None
+
+
+@pytest.mark.asyncio
+async def test_create_sale_uses_catalog_price_when_item_has_no_price() -> None:
+    repository = FakeSalesRepository(available_stock=10)
+    use_case = SalesUseCase(repository)
+
+    sale = await use_case.create_sale(
+        organization_id=repository.branch.organization_id,
+        items=[
+            SaleItemInput(product_name="arroz", quantity=2),
+        ],
+    )
+
+    assert sale.total_amount == Decimal("7.00")
+    assert repository.created_details[0][3] == Decimal("3.50")
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,8 @@
 import re
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, TypeGuard
+from typing import Any, Protocol, TypeGuard
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
@@ -21,12 +22,13 @@ from app.modules.products.exceptions import (
 )
 from app.modules.products.repository import ProductsRepository
 from app.modules.products.service import ProductsUseCase
-from app.modules.sales.models import SaleItemInput
+from app.modules.sales.models import Sale, SaleItemInput
 from app.modules.sales.repository import SalesRepository
 from app.modules.sales.service import SalesUseCase
 from app.modules.telegram.models import PendingTelegramAction, SellerIntent, WarehouseIntent
 from app.modules.telegram.orchestrator import TelegramOrchestrator, TelegramOrchestratorError
 from app.modules.telegram.repository import TelegramPendingActionsRepository
+from app.modules.telegram.sales_parser import TelegramSaleParser, TelegramSaleParserError
 from app.modules.telegram.warehouse import CANCEL_WORDS, CONFIRM_WORDS, normalize_text
 
 USE_EXISTING_CATEGORY_WORDS = {"usar", "usa", "existente", "usar existente"}
@@ -47,6 +49,15 @@ MULTIPLE_CATEGORY_WORDS = {
 class CategoryInterpretation:
     categories: list[str] | None = None
     ambiguous_options: dict[str, list[str]] | None = None
+
+
+class SalePayloadParser(Protocol):
+    async def parse(
+        self,
+        text: str,
+        product_names: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        pass
 
 
 async def connect_telegram_channel(
@@ -104,6 +115,8 @@ async def handle_telegram_text_message(chat_id: int, text: str) -> str:
                 products_use_case=products_use_case,
                 categories_use_case=categories_use_case,
                 sales_use_case=sales_use_case,
+                sale_parser=TelegramSaleParser(),
+                product_names=await _sale_product_names(products_use_case, channel),
             )
 
         try:
@@ -123,10 +136,18 @@ async def handle_telegram_text_message(chat_id: int, text: str) -> str:
             missing_payload_message = _missing_payload_message(seller_intent)
             if missing_payload_message is not None:
                 return missing_payload_message
+            if seller_intent.action_type == "list_sales":
+                return await _execute_seller_read_intent(
+                    channel=channel,
+                    intent=seller_intent,
+                    sales_use_case=sales_use_case,
+                )
             return await _start_create_sale_flow(
                 channel=channel,
                 intent=seller_intent,
                 pending_repository=pending_repository,
+                sale_parser=TelegramSaleParser(),
+                products_use_case=products_use_case,
             )
 
         warehouse_intent = intent.intent
@@ -187,6 +208,8 @@ async def _handle_pending_action(
     products_use_case: ProductsUseCase,
     categories_use_case: CategoriesUseCase,
     sales_use_case: SalesUseCase | None = None,
+    sale_parser: SalePayloadParser | None = None,
+    product_names: list[str] | None = None,
 ) -> str:
     if pending.action_type == "resolve_product_category":
         return await _handle_product_category_decision(
@@ -264,7 +287,11 @@ async def _handle_pending_action(
             )
 
     if pending.action_type == "create_sale" and text not in CONFIRM_WORDS:
-        updated_payload = _sale_payload_from_text(original_text)
+        updated_payload = await _sale_payload_from_text_with_parser(
+            original_text,
+            sale_parser,
+            product_names,
+        )
         if updated_payload is not None:
             await pending_repository.save(
                 channel_id=channel.id,
@@ -631,13 +658,49 @@ def _execute_seller_intent(intent: SellerIntent, organization_name: str | None) 
     return _seller_help_message(organization_name)
 
 
+async def _execute_seller_read_intent(
+    channel: Channel,
+    intent: SellerIntent,
+    sales_use_case: SalesUseCase,
+) -> str:
+    if intent.action_type != "list_sales":
+        return _seller_help_message(channel.organization_name)
+
+    query = _sale_query_from_text(str(intent.payload.get("text", "")))
+    if query is None:
+        return _list_sales_filter_prompt()
+
+    if query["type"] == "date":
+        sales = await sales_use_case.list_sales_by_date(
+            organization_id=channel.organization_id,
+            issue_date=query["date"],
+        )
+        title = f"Ventas del {query['date'].isoformat()}:"
+    else:
+        sales = await sales_use_case.list_sales_by_product(
+            organization_id=channel.organization_id,
+            product_name=str(query["product_name"]),
+        )
+        title = f"Ventas con {query['product_name']}:"
+
+    if not sales:
+        return "No encontre ventas para ese filtro."
+    return _sales_list_message(title, sales)
+
+
 async def _start_create_sale_flow(
     channel: Channel,
     intent: SellerIntent,
     pending_repository: TelegramPendingActionsRepository,
+    sale_parser: SalePayloadParser | None = None,
+    products_use_case: ProductsUseCase | None = None,
 ) -> str:
     sale_text = str(intent.payload.get("text", "")).strip()
-    payload = _sale_payload_from_text(sale_text)
+    payload = await _sale_payload_from_text_with_parser(
+        sale_text,
+        sale_parser,
+        await _sale_product_names(products_use_case, channel),
+    )
     if payload is None:
         return _create_sale_format_prompt()
 
@@ -655,6 +718,11 @@ def _missing_payload_message(intent: SellerIntent | WarehouseIntent) -> str | No
     if intent.action_type == "create_sale":
         if "text" not in intent.payload and "items" not in intent.payload:
             return _create_sale_format_prompt()
+        return None
+
+    if intent.action_type == "list_sales":
+        if "text" not in intent.payload and "product_name" not in intent.payload:
+            return _list_sales_filter_prompt()
         return None
 
     if intent.action_type == "create_product":
@@ -839,13 +907,24 @@ def _pending_summary(action_type: str, payload: dict[str, Any]) -> str:
         client_name = _sale_client_name_from_payload(payload)
         if client_name is not None:
             lines.append(f"Cliente: {client_name}")
+        has_catalog_price = False
         for item in items:
+            if item.unit_price is None:
+                has_catalog_price = True
+                lines.append(
+                    f"- {item.quantity} x {item.product_name} "
+                    "con precio del catalogo"
+                )
+                continue
             subtotal = item.unit_price * item.quantity
             lines.append(
                 f"- {item.quantity} x {item.product_name} "
                 f"a S/ {_format_money(item.unit_price)} = S/ {_format_money(subtotal)}"
             )
-        lines.append(f"Total: S/ {_format_money(_sale_total(items))}")
+        if has_catalog_price:
+            lines.append("Total: se calculara con el precio del catalogo al guardar.")
+        else:
+            lines.append(f"Total: S/ {_format_money(_sale_total(items))}")
         return "\n".join(lines)
 
     if action_type == "create_product":
@@ -922,6 +1001,108 @@ def _domain_error_message(exc: DomainError) -> str:
     return "No pude completar la accion. Intentalo nuevamente."
 
 
+def _sale_query_from_text(text: str) -> dict[str, Any] | None:
+    normalized = normalize_text(text)
+    query_date = _extract_sales_query_date(normalized)
+    if query_date is not None:
+        return {"type": "date", "date": query_date}
+
+    product_name = _extract_sales_query_product(normalized)
+    if product_name is not None:
+        return {"type": "product", "product_name": product_name}
+    return None
+
+
+def _extract_sales_query_date(text: str) -> date | None:
+    if re.search(r"\b(?:hoy|del dia|de hoy)\b", text):
+        return datetime.now(UTC).date()
+
+    match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+    if match:
+        try:
+            return date.fromisoformat(match.group(1))
+        except ValueError:
+            return None
+
+    match = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", text)
+    if match:
+        day, month, year = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+
+    return None
+
+
+def _extract_sales_query_product(text: str) -> str | None:
+    patterns = [
+        r"ventas?\s+(?:del\s+|de\s+)?producto\s+(.+)$",
+        r"ventas?\s+(?:con|de)\s+(.+)$",
+        r"historial\s+(?:del\s+|de\s+)?producto\s+(.+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        product_name = match.group(1).strip()
+        if product_name and product_name not in {"hoy", "ayer"}:
+            return product_name
+    return None
+
+
+def _sales_list_message(title: str, sales: list[Sale]) -> str:
+    lines = [title]
+    for sale in sales:
+        client = f" - {sale.client_name}" if sale.client_name else ""
+        lines.append(
+            f"- {sale.issue_date.isoformat()}{client}: S/ {_format_money(sale.total_amount)}"
+        )
+        for detail in sale.details:
+            lines.append(
+                f"  {detail.quantity} x {detail.product_name} "
+                f"a S/ {_format_money(detail.unit_price)}"
+            )
+    return "\n".join(lines)
+
+
+def _list_sales_filter_prompt() -> str:
+    return (
+        "Para consultar ventas dime una fecha o producto.\n"
+        "Ejemplos: ventas de hoy, ventas del 2026-07-02, ventas de arroz"
+    )
+
+
+async def _sale_payload_from_text_with_parser(
+    text: str,
+    sale_parser: SalePayloadParser | None,
+    product_names: list[str] | None = None,
+) -> dict[str, Any] | None:
+    if sale_parser is None:
+        return _sale_payload_from_text(text)
+
+    try:
+        payload = await sale_parser.parse(text, product_names)
+    except TelegramSaleParserError:
+        return _sale_payload_from_text(text)
+
+    return payload if payload is not None else _sale_payload_from_text(text)
+
+
+async def _sale_product_names(
+    products_use_case: ProductsUseCase | None,
+    channel: Channel,
+) -> list[str] | None:
+    if products_use_case is None:
+        return None
+
+    try:
+        products = await products_use_case.list_products(channel.organization_id)
+    except DomainError:
+        return None
+    return [product.name for product in products]
+
+
 def _sale_payload_from_text(text: str) -> dict[str, Any] | None:
     sale_text, client_name = _extract_sale_client(text)
     sale_items = _parse_sale_items(sale_text)
@@ -929,16 +1110,22 @@ def _sale_payload_from_text(text: str) -> dict[str, Any] | None:
         return None
     payload: dict[str, Any] = {
         "items": [
-            {
-                "product_name": item.product_name,
-                "quantity": item.quantity,
-                "unit_price": str(item.unit_price),
-            }
+            _sale_item_payload(item)
             for item in sale_items
         ]
     }
     if client_name is not None:
         payload["client_name"] = client_name
+    return payload
+
+
+def _sale_item_payload(item: SaleItemInput) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "product_name": item.product_name,
+        "quantity": item.quantity,
+    }
+    if item.unit_price is not None:
+        payload["unit_price"] = str(item.unit_price)
     return payload
 
 
@@ -974,13 +1161,16 @@ def _parse_sale_items(text: str) -> list[SaleItemInput]:
 
 
 def _strip_sale_intro(text: str) -> str:
-    return re.sub(
-        r"^\s*(?:registra(?:r)?|crear|anota(?:r)?|guarda(?:r)?)?\s*"
-        r"(?:una\s+)?(?:venta|pedido)\s*(?:de)?\s*",
+    stripped = re.sub(
+        r"^\s*(?:hola\s+)?(?:he\s+)?(?:vendido|vendi|vender|venta|pedido|"
+        r"registra(?:r)?|crear|anota(?:r)?|guarda(?:r)?)\s*"
+        r"(?:venta|pedido)?\s*(?:de)?\s*",
         "",
         text.strip(),
         flags=re.IGNORECASE,
     ).strip()
+    stripped = re.sub(r"^una\s+(?:venta|pedido)\s+(?:de\s+)?", "", stripped, flags=re.IGNORECASE)
+    return re.sub(r"^(?:he\s+)?vendido\s+", "", stripped, flags=re.IGNORECASE).strip()
 
 
 def _split_sale_parts(text: str) -> list[str]:
@@ -989,30 +1179,56 @@ def _split_sale_parts(text: str) -> list[str]:
 
 
 def _parse_sale_item(text: str) -> SaleItemInput | None:
-    match = re.match(
+    priced_match = re.match(
         r"^(?P<quantity>\d+)\s+(?P<product>.+?)\s+"
         r"(?:a|por|precio|precio\s+de)\s+(?:s/\s*)?"
         r"(?P<unit_price>\d+(?:\.\d{1,2})?)$",
         text,
         flags=re.IGNORECASE,
     )
-    if match is None:
+    if priced_match is not None:
+        quantity = int(priced_match.group("quantity"))
+        if quantity <= 0:
+            return None
+
+        try:
+            unit_price = Decimal(priced_match.group("unit_price"))
+        except InvalidOperation:
+            return None
+
+        return SaleItemInput(
+            product_name=_clean_sale_product_name(priced_match.group("product")),
+            quantity=quantity,
+            unit_price=unit_price,
+        )
+
+    unpriced_match = re.match(
+        r"^(?P<quantity>\d+|un|una|uno)\s+(?P<product>.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if unpriced_match is None:
         return None
 
-    quantity = int(match.group("quantity"))
+    quantity = _sale_quantity_from_text(unpriced_match.group("quantity"))
     if quantity <= 0:
         return None
 
-    try:
-        unit_price = Decimal(match.group("unit_price"))
-    except InvalidOperation:
-        return None
-
     return SaleItemInput(
-        product_name=match.group("product").strip(),
+        product_name=_clean_sale_product_name(unpriced_match.group("product")),
         quantity=quantity,
-        unit_price=unit_price,
     )
+
+
+def _sale_quantity_from_text(text: str) -> int:
+    if text in {"un", "una", "uno"}:
+        return 1
+    return int(text)
+
+
+def _clean_sale_product_name(text: str) -> str:
+    cleaned = re.sub(r"\bde\s+(\d)", r"\1", text.strip())
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def _sale_items_from_payload(payload: dict[str, Any]) -> list[SaleItemInput]:
@@ -1031,13 +1247,11 @@ def _sale_items_from_payload(payload: dict[str, Any]) -> list[SaleItemInput]:
             continue
         if not isinstance(quantity, int | str):
             continue
-        if unit_price is None:
-            continue
         sale_items.append(
             SaleItemInput(
                 product_name=product_name,
                 quantity=int(quantity),
-                unit_price=Decimal(str(unit_price)),
+                unit_price=Decimal(str(unit_price)) if unit_price is not None else None,
             )
         )
     return sale_items
@@ -1053,6 +1267,8 @@ def _sale_client_name_from_payload(payload: dict[str, Any]) -> str | None:
 def _sale_total(items: list[SaleItemInput]) -> Decimal:
     total = Decimal("0")
     for item in items:
+        if item.unit_price is None:
+            continue
         total += item.unit_price * item.quantity
     return total
 
@@ -1063,8 +1279,9 @@ def _format_money(value: Decimal) -> str:
 
 def _create_sale_format_prompt() -> str:
     return (
-        "Para registrar una venta necesito producto, cantidad y monto.\n"
-        "Ejemplo: registrar venta cliente Juan Perez: 2 arroz a 3.50 y 1 leche a 4.00"
+        "Para registrar una venta necesito producto y cantidad.\n"
+        "Ejemplos: he vendido 1 inka cola de 3 litros, o "
+        "registrar venta cliente Juan Perez: 2 arroz a 3.50"
     )
 
 
@@ -1482,9 +1699,11 @@ def _help_message(organization_name: str | None = None) -> str:
 def _seller_help_message(organization_name: str | None = None) -> str:
     company_name = _company_name(organization_name)
     return (
-        f"Soy el vendedor de {company_name}. Puedo ayudarte con solicitudes de ventas, "
-        "pedidos, clientes y comprobantes.\n\n"
-        "El registro de ventas por Telegram aun no esta habilitado."
+        f"Soy el vendedor de {company_name}. Puedes escribir:\n"
+        "- registrar venta cliente Juan Perez: 2 arroz a 3.50\n"
+        "- ventas de hoy\n"
+        "- ventas del 2026-07-02\n"
+        "- ventas de arroz"
     )
 
 
