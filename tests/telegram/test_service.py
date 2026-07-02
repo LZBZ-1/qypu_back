@@ -7,7 +7,8 @@ import pytest
 from app.modules.categories.models import Category
 from app.modules.channels.models import Channel
 from app.modules.products.models import Product
-from app.modules.telegram.models import PendingTelegramAction, WarehouseIntent
+from app.modules.sales.models import Sale, SaleItemInput
+from app.modules.telegram.models import PendingTelegramAction, SellerIntent, WarehouseIntent
 from app.modules.telegram.service import (
     _agent_help_message,
     _ask_to_resolve_product_category_if_needed,
@@ -20,7 +21,9 @@ from app.modules.telegram.service import (
     _handle_product_category_decision,
     _interpret_category_names,
     _missing_payload_message,
+    _parse_sale_items,
     _start_create_category_flow,
+    _start_create_sale_flow,
 )
 
 
@@ -116,6 +119,29 @@ class FakeProductsUseCase:
         )
 
 
+class FakeSalesUseCase:
+    def __init__(self) -> None:
+        self.created_items: list[SaleItemInput] = []
+
+    async def create_sale(
+        self,
+        organization_id: object,
+        items: list[SaleItemInput],
+    ) -> Sale:
+        self.created_items = items
+        return Sale(
+            id=uuid4(),
+            branch_id=uuid4(),
+            issue_date=datetime.now(UTC).date(),
+            status="valid",
+            total_amount=sum(
+                (item.unit_price * item.quantity for item in items),
+                start=items[0].unit_price * 0,
+            ),
+            details=[],
+        )
+
+
 @pytest.fixture
 def channel() -> Channel:
     return Channel(
@@ -175,6 +201,80 @@ def test_create_product_missing_name_message_guides_next_reply() -> None:
         "Cual es el nombre del producto que quieres registrar? "
         "Puedes responder solo con el nombre."
     )
+
+
+def test_parse_sale_items_extracts_products_quantities_and_amounts() -> None:
+    items = _parse_sale_items("registrar venta 2 arroz a 3.50 y 1 leche gloria a 4")
+
+    assert items == [
+        SaleItemInput(product_name="arroz", quantity=2, unit_price=items[0].unit_price),
+        SaleItemInput(product_name="leche gloria", quantity=1, unit_price=items[1].unit_price),
+    ]
+    assert str(items[0].unit_price) == "3.50"
+    assert str(items[1].unit_price) == "4"
+
+
+@pytest.mark.asyncio
+async def test_start_create_sale_flow_saves_pending_confirmation(channel: Channel) -> None:
+    pending_repository = FakePendingRepository()
+
+    response = await _start_create_sale_flow(
+        channel=channel,
+        intent=SellerIntent(
+            "create_sale",
+            {"text": "registrar venta 2 arroz a 3.50 y 1 leche a 4"},
+            requires_confirmation=True,
+        ),
+        pending_repository=pending_repository,
+    )
+
+    assert response == (
+        "Voy a registrar esta venta:\n"
+        "- 2 x arroz a S/ 3.50 = S/ 7.00\n"
+        "- 1 x leche a S/ 4.00 = S/ 4.00\n"
+        "Total: S/ 11.00\n\n"
+        "Responde SI para guardar o NO para cancelar."
+    )
+    assert pending_repository.saved_action_type == "create_sale"
+    assert pending_repository.saved_payload == {
+        "items": [
+            {"product_name": "arroz", "quantity": 2, "unit_price": "3.50"},
+            {"product_name": "leche", "quantity": 1, "unit_price": "4"},
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_sale_pending_confirmation_saves_after_yes(channel: Channel) -> None:
+    pending_repository = FakePendingRepository()
+    sales_use_case = FakeSalesUseCase()
+    pending = PendingTelegramAction(
+        id=uuid4(),
+        channel_id=channel.id,
+        action_type="create_sale",
+        payload={
+            "items": [
+                {"product_name": "arroz", "quantity": 2, "unit_price": "3.50"},
+                {"product_name": "leche", "quantity": 1, "unit_price": "4"},
+            ]
+        },
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+
+    response = await _handle_pending_action(
+        channel=channel,
+        pending=pending,
+        text="si",
+        original_text="si",
+        pending_repository=pending_repository,
+        products_use_case=FakeProductsUseCase(),
+        categories_use_case=FakeCategoriesUseCase(),
+        sales_use_case=sales_use_case,
+    )
+
+    assert response == "Venta registrada por S/ 11.00."
+    assert pending_repository.cleared is True
+    assert [item.product_name for item in sales_use_case.created_items] == ["arroz", "leche"]
 
 
 @pytest.mark.asyncio

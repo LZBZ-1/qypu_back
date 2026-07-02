@@ -14,6 +14,6 @@ class SellerAgent:
             r"\b(?:vender|venta|pedido|cliente|cobrar|boleta|factura|cotizar)\b",
             normalized,
         ):
-            return SellerIntent("create_sale", {"text": normalized}, requires_confirmation=False)
+            return SellerIntent("create_sale", {"text": text}, requires_confirmation=True)
 
         return None

@@ -88,11 +88,12 @@ Reglas:
   create_product, create_category, set_stock, increment_stock, rename_product,
   rename_category.
 - Para seller usa solo estas acciones: help, create_sale.
-- create_sale solo identifica que la solicitud pertenece al vendedor. No inventes datos.
-- requires_confirmation debe ser true solo en acciones de escritura de warehouse:
+- create_sale identifica que la solicitud pertenece al vendedor y conserva el mensaje
+  original en text. No inventes datos.
+- requires_confirmation debe ser true en create_sale y en acciones de escritura de warehouse:
   create_product, create_category, set_stock, increment_stock, rename_product, rename_category.
 - requires_confirmation debe ser false en help, list_products, list_products_by_category,
-  list_categories, get_stock y create_sale.
+  list_categories y get_stock.
 - Extrae product_name, category_name, new_name y text en espanol natural.
 - Para create_category, conserva en text el mensaje original completo. Si el usuario
   menciona varias categorias separadas por comas, deja category_name con el texto de

@@ -1,0 +1,4 @@
+ALTER TABLE public.sales
+  ALTER COLUMN client_id DROP NOT NULL,
+  ADD COLUMN total_amount NUMERIC(10, 2) NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
+  ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();

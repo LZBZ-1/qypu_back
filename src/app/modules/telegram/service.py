@@ -21,6 +21,9 @@ from app.modules.products.exceptions import (
 )
 from app.modules.products.repository import ProductsRepository
 from app.modules.products.service import ProductsUseCase
+from app.modules.sales.models import SaleItemInput
+from app.modules.sales.repository import SalesRepository
+from app.modules.sales.service import SalesUseCase
 from app.modules.telegram.models import PendingTelegramAction, SellerIntent, WarehouseIntent
 from app.modules.telegram.orchestrator import TelegramOrchestrator, TelegramOrchestratorError
 from app.modules.telegram.repository import TelegramPendingActionsRepository
@@ -87,6 +90,7 @@ async def handle_telegram_text_message(chat_id: int, text: str) -> str:
             ProductsRepository(connection),
             categories_use_case,
         )
+        sales_use_case = SalesUseCase(SalesRepository(connection))
         pending = await pending_repository.find_active(channel.id)
         normalized_text = normalize_text(text)
 
@@ -99,6 +103,7 @@ async def handle_telegram_text_message(chat_id: int, text: str) -> str:
                 pending_repository=pending_repository,
                 products_use_case=products_use_case,
                 categories_use_case=categories_use_case,
+                sales_use_case=sales_use_case,
             )
 
         try:
@@ -118,7 +123,11 @@ async def handle_telegram_text_message(chat_id: int, text: str) -> str:
             missing_payload_message = _missing_payload_message(seller_intent)
             if missing_payload_message is not None:
                 return missing_payload_message
-            return _execute_seller_intent(seller_intent, channel.organization_name)
+            return await _start_create_sale_flow(
+                channel=channel,
+                intent=seller_intent,
+                pending_repository=pending_repository,
+            )
 
         warehouse_intent = intent.intent
         if not isinstance(warehouse_intent, WarehouseIntent):
@@ -177,6 +186,7 @@ async def _handle_pending_action(
     pending_repository: TelegramPendingActionsRepository,
     products_use_case: ProductsUseCase,
     categories_use_case: CategoriesUseCase,
+    sales_use_case: SalesUseCase | None = None,
 ) -> str:
     if pending.action_type == "resolve_product_category":
         return await _handle_product_category_decision(
@@ -253,6 +263,18 @@ async def _handle_pending_action(
                 WarehouseIntent("create_product", updated_payload, requires_confirmation=True)
             )
 
+    if pending.action_type == "create_sale" and text not in CONFIRM_WORDS:
+        updated_payload = _sale_payload_from_text(original_text)
+        if updated_payload is not None:
+            await pending_repository.save(
+                channel_id=channel.id,
+                action_type="create_sale",
+                payload=updated_payload,
+            )
+            return _confirmation_message(
+                SellerIntent("create_sale", updated_payload, requires_confirmation=True)
+            )
+
     if text not in CONFIRM_WORDS:
         return (
             "Hay una accion pendiente. Responde SI para guardar o NO para cancelar.\n\n"
@@ -276,6 +298,7 @@ async def _handle_pending_action(
             payload=pending.payload,
             products_use_case=products_use_case,
             categories_use_case=categories_use_case,
+            sales_use_case=sales_use_case,
         )
     except DomainError as exc:
         await pending_repository.clear(channel.id)
@@ -608,7 +631,32 @@ def _execute_seller_intent(intent: SellerIntent, organization_name: str | None) 
     return _seller_help_message(organization_name)
 
 
+async def _start_create_sale_flow(
+    channel: Channel,
+    intent: SellerIntent,
+    pending_repository: TelegramPendingActionsRepository,
+) -> str:
+    sale_text = str(intent.payload.get("text", "")).strip()
+    payload = _sale_payload_from_text(sale_text)
+    if payload is None:
+        return _create_sale_format_prompt()
+
+    await pending_repository.save(
+        channel_id=channel.id,
+        action_type="create_sale",
+        payload=payload,
+    )
+    return _confirmation_message(
+        SellerIntent("create_sale", payload, requires_confirmation=True)
+    )
+
+
 def _missing_payload_message(intent: SellerIntent | WarehouseIntent) -> str | None:
+    if intent.action_type == "create_sale":
+        if "text" not in intent.payload and "items" not in intent.payload:
+            return _create_sale_format_prompt()
+        return None
+
     if intent.action_type == "create_product":
         if "product_name" not in intent.payload:
             return _create_product_name_prompt()
@@ -682,7 +730,18 @@ async def _execute_write_action(
     payload: dict[str, Any],
     products_use_case: ProductsUseCase,
     categories_use_case: CategoriesUseCase,
+    sales_use_case: SalesUseCase | None = None,
 ) -> str:
+    if action_type == "create_sale":
+        if sales_use_case is None:
+            return "No pude completar la venta. Intentalo nuevamente."
+        sale_items = _sale_items_from_payload(payload)
+        sale = await sales_use_case.create_sale(
+            organization_id=channel.organization_id,
+            items=sale_items,
+        )
+        return f"Venta registrada por S/ {_format_money(sale.total_amount)}."
+
     if action_type == "create_product":
         product, stock = await products_use_case.create_product(
             organization_id=channel.organization_id,
@@ -764,7 +823,7 @@ async def _execute_write_action(
     return _help_message(channel.organization_name)
 
 
-def _confirmation_message(intent: WarehouseIntent) -> str:
+def _confirmation_message(intent: SellerIntent | WarehouseIntent) -> str:
     return (
         f"{_pending_summary(intent.action_type, intent.payload)}\n\n"
         "Responde SI para guardar o NO para cancelar."
@@ -772,6 +831,18 @@ def _confirmation_message(intent: WarehouseIntent) -> str:
 
 
 def _pending_summary(action_type: str, payload: dict[str, Any]) -> str:
+    if action_type == "create_sale":
+        items = _sale_items_from_payload(payload)
+        lines = ["Voy a registrar esta venta:"]
+        for item in items:
+            subtotal = item.unit_price * item.quantity
+            lines.append(
+                f"- {item.quantity} x {item.product_name} "
+                f"a S/ {_format_money(item.unit_price)} = S/ {_format_money(subtotal)}"
+            )
+        lines.append(f"Total: S/ {_format_money(_sale_total(items))}")
+        return "\n".join(lines)
+
     if action_type == "create_product":
         price = f"\nPrecio: S/ {payload['unit_price']}" if "unit_price" in payload else ""
         stock = f"\nStock inicial: {payload['initial_stock']}" if "initial_stock" in payload else ""
@@ -844,6 +915,121 @@ def _domain_error_message(exc: DomainError) -> str:
     if isinstance(exc, ProductStockWouldBeNegativeError):
         return "No puedo dejar el stock en negativo."
     return "No pude completar la accion. Intentalo nuevamente."
+
+
+def _sale_payload_from_text(text: str) -> dict[str, Any] | None:
+    sale_items = _parse_sale_items(text)
+    if not sale_items:
+        return None
+    return {
+        "items": [
+            {
+                "product_name": item.product_name,
+                "quantity": item.quantity,
+                "unit_price": str(item.unit_price),
+            }
+            for item in sale_items
+        ]
+    }
+
+
+def _parse_sale_items(text: str) -> list[SaleItemInput]:
+    normalized = normalize_text(_strip_sale_intro(text))
+    parts = _split_sale_parts(normalized)
+    items: list[SaleItemInput] = []
+    for part in parts:
+        item = _parse_sale_item(part)
+        if item is not None:
+            items.append(item)
+    return items
+
+
+def _strip_sale_intro(text: str) -> str:
+    return re.sub(
+        r"^\s*(?:registra(?:r)?|crear|anota(?:r)?|guarda(?:r)?)?\s*"
+        r"(?:una\s+)?(?:venta|pedido)\s*(?:de)?\s*",
+        "",
+        text.strip(),
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def _split_sale_parts(text: str) -> list[str]:
+    pieces = re.split(r"\s*(?:,|;|\s+y\s+)\s*", text)
+    return [piece.strip() for piece in pieces if piece.strip()]
+
+
+def _parse_sale_item(text: str) -> SaleItemInput | None:
+    match = re.match(
+        r"^(?P<quantity>\d+)\s+(?P<product>.+?)\s+"
+        r"(?:a|por|precio|precio\s+de)\s+(?:s/\s*)?"
+        r"(?P<unit_price>\d+(?:\.\d{1,2})?)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+
+    quantity = int(match.group("quantity"))
+    if quantity <= 0:
+        return None
+
+    try:
+        unit_price = Decimal(match.group("unit_price"))
+    except InvalidOperation:
+        return None
+
+    return SaleItemInput(
+        product_name=match.group("product").strip(),
+        quantity=quantity,
+        unit_price=unit_price,
+    )
+
+
+def _sale_items_from_payload(payload: dict[str, Any]) -> list[SaleItemInput]:
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        return []
+
+    sale_items: list[SaleItemInput] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        product_name = raw_item.get("product_name")
+        quantity = raw_item.get("quantity")
+        unit_price = raw_item.get("unit_price")
+        if not isinstance(product_name, str):
+            continue
+        if not isinstance(quantity, int | str):
+            continue
+        if unit_price is None:
+            continue
+        sale_items.append(
+            SaleItemInput(
+                product_name=product_name,
+                quantity=int(quantity),
+                unit_price=Decimal(str(unit_price)),
+            )
+        )
+    return sale_items
+
+
+def _sale_total(items: list[SaleItemInput]) -> Decimal:
+    total = Decimal("0")
+    for item in items:
+        total += item.unit_price * item.quantity
+    return total
+
+
+def _format_money(value: Decimal) -> str:
+    return str(value.quantize(Decimal("0.01")))
+
+
+def _create_sale_format_prompt() -> str:
+    return (
+        "Para registrar una venta necesito producto, cantidad y monto.\n"
+        "Ejemplo: registrar venta 2 arroz a 3.50 y 1 leche a 4.00"
+    )
 
 
 def _payload_decimal(value: object) -> Decimal | None:
