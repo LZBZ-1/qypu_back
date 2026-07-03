@@ -27,7 +27,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Sincronizar dependencias
-        run: uv sync --frozen --extra dev
+        run: uv sync --frozen --group dev
 
       - name: Ruff (lint + format check)
         run: uv run ruff check src tests

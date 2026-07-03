@@ -227,6 +227,57 @@ async def test_route_list_products_by_category() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_route_list_sales() -> None:
+    settings = Settings(
+        supabase_url="https://example.supabase.co",
+        supabase_service_role_key="service-role",
+        database_url="postgresql://postgres:postgres@localhost:5432/postgres",
+        groq_api_key="groq-test-key",
+    )
+    orchestrator = TelegramOrchestrator(settings)
+
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "agent_type": "seller",
+                                    "action_type": "list_sales",
+                                    "requires_confirmation": False,
+                                    "payload": {
+                                        "product_name": "arroz",
+                                        "category_name": None,
+                                        "unit_price": None,
+                                        "initial_stock": None,
+                                        "quantity": None,
+                                        "delta": None,
+                                        "new_name": None,
+                                        "text": None,
+                                    },
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+    )
+
+    telegram_route = await orchestrator.route("ventas de arroz")
+
+    assert telegram_route is not None
+    assert telegram_route.agent_type == "seller"
+    assert telegram_route.intent.action_type == "list_sales"
+    assert telegram_route.intent.requires_confirmation is False
+    assert telegram_route.intent.payload["product_name"] == "arroz"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_route_returns_none_when_model_marks_message_out_of_scope() -> None:
     settings = Settings(
         supabase_url="https://example.supabase.co",
