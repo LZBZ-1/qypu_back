@@ -17,4 +17,3 @@ class SaleWithoutItemsError(DomainError):
             message="sale must include at least one item",
             status_code=400,
         )
-

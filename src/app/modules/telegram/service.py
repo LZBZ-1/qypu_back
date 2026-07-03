@@ -709,9 +709,7 @@ async def _start_create_sale_flow(
         action_type="create_sale",
         payload=payload,
     )
-    return _confirmation_message(
-        SellerIntent("create_sale", payload, requires_confirmation=True)
-    )
+    return _confirmation_message(SellerIntent("create_sale", payload, requires_confirmation=True))
 
 
 def _missing_payload_message(intent: SellerIntent | WarehouseIntent) -> str | None:
@@ -911,10 +909,7 @@ def _pending_summary(action_type: str, payload: dict[str, Any]) -> str:
         for item in items:
             if item.unit_price is None:
                 has_catalog_price = True
-                lines.append(
-                    f"- {item.quantity} x {item.product_name} "
-                    "con precio del catalogo"
-                )
+                lines.append(f"- {item.quantity} x {item.product_name} con precio del catalogo")
                 continue
             subtotal = item.unit_price * item.quantity
             lines.append(
@@ -943,10 +938,7 @@ def _pending_summary(action_type: str, payload: dict[str, Any]) -> str:
             lines = ["Voy a registrar estas categorias:"]
             lines.extend(f"- {category_name}" for category_name in category_names)
             return "\n".join(lines)
-        return (
-            "Voy a registrar esta categoria:\n"
-            f"Categoria: {payload['category_name']}"
-        )
+        return f"Voy a registrar esta categoria:\nCategoria: {payload['category_name']}"
 
     if action_type == "create_product_with_new_category":
         price = f"\nPrecio: S/ {payload['unit_price']}" if "unit_price" in payload else ""
@@ -1108,12 +1100,7 @@ def _sale_payload_from_text(text: str) -> dict[str, Any] | None:
     sale_items = _parse_sale_items(sale_text)
     if not sale_items:
         return None
-    payload: dict[str, Any] = {
-        "items": [
-            _sale_item_payload(item)
-            for item in sale_items
-        ]
-    }
+    payload: dict[str, Any] = {"items": [_sale_item_payload(item) for item in sale_items]}
     if client_name is not None:
         payload["client_name"] = client_name
     return payload
@@ -1553,11 +1540,7 @@ def _split_on_unquoted_y(text: str) -> list[str]:
 
 def _is_wrapped_in_quotes(text: str) -> bool:
     stripped = text.strip()
-    return (
-        len(stripped) >= 2
-        and stripped[0] in {'"', "'"}
-        and stripped[-1] == stripped[0]
-    )
+    return len(stripped) >= 2 and stripped[0] in {'"', "'"} and stripped[-1] == stripped[0]
 
 
 def _strip_matching_quotes(text: str) -> str:
@@ -1569,9 +1552,7 @@ def _strip_matching_quotes(text: str) -> str:
 
 def _clean_category_list(categories: list[str]) -> list[str]:
     return [
-        cleaned
-        for category in categories
-        if (cleaned := _strip_matching_quotes(category).strip())
+        cleaned for category in categories if (cleaned := _strip_matching_quotes(category).strip())
     ]
 
 

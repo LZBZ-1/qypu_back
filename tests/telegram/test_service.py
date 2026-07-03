@@ -278,17 +278,13 @@ def test_parse_sale_items_extracts_products_quantities_and_amounts() -> None:
 def test_parse_sale_items_accepts_natural_sale_without_amount() -> None:
     items = _parse_sale_items("Hola he vendido una inka cola de 3 litros")
 
-    assert items == [
-        SaleItemInput(product_name="inka cola 3 litros", quantity=1, unit_price=None)
-    ]
+    assert items == [SaleItemInput(product_name="inka cola 3 litros", quantity=1, unit_price=None)]
 
 
 def test_parse_sale_items_accepts_short_product_name_without_amount() -> None:
     items = _parse_sale_items("Hola he vendido una inka de 3 litros")
 
-    assert items == [
-        SaleItemInput(product_name="inka 3 litros", quantity=1, unit_price=None)
-    ]
+    assert items == [SaleItemInput(product_name="inka 3 litros", quantity=1, unit_price=None)]
 
 
 def test_sale_payload_allows_catalog_price_when_amount_is_missing() -> None:
